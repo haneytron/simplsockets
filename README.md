@@ -28,7 +28,9 @@ INSTALLATION INSTRUCTIONS
 Simply add the assembly to your project!
 
 // To create a client
+
 var client = SimplSocket.CreateClient(...)
 
 // To create a server
+
 var server = SimplSocket.CreateServer(...)
