@@ -1,0 +1,26 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SimplSockets", "SimplSockets\SimplSockets.csproj", "{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{FA9E9333-3010-4D4D-918A-D881895115B4}"
+	ProjectSection(SolutionItems) = preProject
+		..\LICENSE.txt = ..\LICENSE.txt
+		..\README.md = ..\README.md
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
