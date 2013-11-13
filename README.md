@@ -17,26 +17,26 @@ VERSION HISTORY
 ------------------
 
 
--Fixed logic error in BlockingQueue constructor where _queue wasn't actually assigned
+- [x] Fixed logic error in BlockingQueue constructor where _queue wasn't actually assigned
 
--Fixed logic error in Pool where resetItemMethod was not always called when Popping an item
+- [x] Fixed logic error in Pool where resetItemMethod was not always called when Popping an item
 
--Fixed atomicity of Error event so that it is raised exactly once on disconnection regardless of multithreaded use
+- [x] Fixed atomicity of Error event so that it is raised exactly once on disconnection regardless of multithreaded use
 
--On error, communication methods now exit gracefully after Error event is raised (no bubbled exceptions)
+- [x] On error, communication methods now exit gracefully after Error event is raised (no bubbled exceptions)
 
--Exposed CurrentlyConnectedClients property on ISimplSocketServer
+- [x] Exposed CurrentlyConnectedClients property on ISimplSocketServer
 
--Added XML comments to a few classes
+- [x] Added XML comments to a few classes
 
 
 1.0.0
 ------------------
 
 
--Initial release of SimplSockets
+- [x] Initial release of SimplSockets
 
--Includes client and server methods
+- [x] Includes client and server methods
 
 
 INSTALLATION INSTRUCTIONS
