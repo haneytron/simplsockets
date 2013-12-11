@@ -4,6 +4,8 @@ SIMPLSOCKETS 1.0.1
 
 A spinoff library of Dache that provides highly efficient, scalable, simple socket communication.
 
+http://www.nuget.org/packages/SimplSockets
+
 http://www.getdache.net
 
 info@getdache.net
