@@ -1,4 +1,4 @@
-SIMPLSOCKETS 1.0.1
+SIMPLSOCKETS 1.1.0
 ===========
 
 
