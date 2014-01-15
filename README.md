@@ -1,4 +1,4 @@
-SIMPLSOCKETS 1.1.0
+SIMPLSOCKETS 1.1.1
 ===========
 
 
@@ -13,6 +13,12 @@ A spinoff library of Dache that provides highly efficient, scalable, simple sock
 
 VERSION HISTORY
 ============================================
+
+
+1.1.1
+------------------
+
+- Fixed a bug in SimplSocket regarding calculation of message length (thanks to Christoph Martens for identifying and reporting the bug)
 
 
 1.1.0
