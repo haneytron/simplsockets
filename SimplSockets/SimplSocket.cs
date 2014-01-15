@@ -76,7 +76,7 @@ namespace SimplSockets
         /// <param name="messageBufferSize">The message buffer size to use for send/receive.</param>
         /// <param name="maximumConnections">The maximum connections to allow to use the socket simultaneously.</param>
         /// <param name="useNagleAlgorithm">Whether or not to use the Nagle algorithm.</param>
-        public static ISimplSocketServer CreateServer(Func<Socket> socketFunc, EventHandler<SocketErrorArgs> errorHandler, EventHandler<MessageReceivedArgs> messageHandler, 
+        public static ISimplSocketServer CreateServer(Func<Socket> socketFunc, EventHandler<SocketErrorArgs> errorHandler, EventHandler<MessageReceivedArgs> messageHandler,
             int messageBufferSize, int maximumConnections, bool useNagleAlgorithm)
         {
             // Sanitize
@@ -872,7 +872,7 @@ namespace SimplSockets
 
         private static void ExtractControlBytes(byte[] buffer, int offset, out int messageLength, out int threadId)
         {
-            messageLength = (buffer[offset + 3] << 24) | (buffer[offset + 2] << 16) | (buffer[offset + 1] << 8) | buffer[offset + 0] - _controlBytesPlaceholder.Length;
+            messageLength = ((buffer[offset + 3] << 24) | (buffer[offset + 2] << 16) | (buffer[offset + 1] << 8) | buffer[offset + 0]) - _controlBytesPlaceholder.Length;
             threadId = (buffer[offset + 7] << 24) | (buffer[offset + 6] << 16) | (buffer[offset + 5] << 8) | buffer[offset + 4];
         }
 
