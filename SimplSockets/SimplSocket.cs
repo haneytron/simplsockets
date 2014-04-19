@@ -125,10 +125,10 @@ namespace SimplSockets
             _maxConnectionsSemaphore = new Semaphore(maximumConnections, maximumConnections);
             _useNagleAlgorithm = useNagleAlgorithm;
 
-            _receiveBufferQueue = new Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>>(maximumConnections);
+            _receiveBufferQueue = new Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>>(10);
 
             // Initialize the client multiplexer
-            _clientMultiplexer = new Dictionary<int, MultiplexerData>(maximumConnections);
+            _clientMultiplexer = new Dictionary<int, MultiplexerData>(10);
 
             // Create the pools
             _messageStatePool = new Pool<MessageState>(maximumConnections, () => new MessageState(), messageState =>
@@ -143,15 +143,15 @@ namespace SimplSockets
                 messageState.TotalBytesToRead = -1;
             });
             _manualResetEventPool = new Pool<ManualResetEvent>(maximumConnections, () => new ManualResetEvent(false), manualResetEvent => manualResetEvent.Reset());
-            _bufferPool = new Pool<byte[]>(maximumConnections * 10, () => new byte[messageBufferSize], null);
+            _bufferPool = new Pool<byte[]>(maximumConnections, () => new byte[messageBufferSize], null);
             _receiveMessagePool = new Pool<ReceivedMessage>(maximumConnections, () => new ReceivedMessage(), receivedMessage =>
             {
                 receivedMessage.Message = null;
                 receivedMessage.Socket = null;
             });
 
-            // Populate the pools
-            for (int i = 0; i < maximumConnections; i++)
+            // Populate the pools at 20%
+            for (int i = 0; i < maximumConnections / 5; i++)
             {
                 _messageStatePool.Push(new MessageState());
                 _manualResetEventPool.Push(new ManualResetEvent(false));
@@ -207,7 +207,7 @@ namespace SimplSockets
             {
                 _socket.Connect(endPoint);
             }
-            catch (SocketException ex)
+            catch (SocketException)
             {
                 _isDoingSomething = false;
                 return false;
@@ -217,19 +217,20 @@ namespace SimplSockets
             var messageState = _messageStatePool.Pop();
             messageState.Data = new MemoryStream();
             messageState.Handler = _socket;
-            // Get a buffer from the buffer pool
-            var buffer = _bufferPool.Pop();
 
             // Create receive queue for this client
             _receiveBufferQueueLock.EnterWriteLock();
             try
             {
-                _receiveBufferQueue[messageState.Handler.GetHashCode()] = new BlockingQueue<KeyValuePair<byte[], int>>(_maximumConnections * 10);
+                _receiveBufferQueue[messageState.Handler.GetHashCode()] = new BlockingQueue<KeyValuePair<byte[], int>>(10);
             }
             finally
             {
                 _receiveBufferQueueLock.ExitWriteLock();
             }
+
+            // Get a buffer from the buffer pool
+            var buffer = _bufferPool.Pop();
 
             // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
             _socket.BeginReceive(buffer, 0, buffer.Length, 0, ReceiveCallback, new KeyValuePair<MessageState, byte[]>(messageState, buffer));
@@ -519,7 +520,7 @@ namespace SimplSockets
             _receiveBufferQueueLock.EnterWriteLock();
             try
             {
-                _receiveBufferQueue[messageState.Handler.GetHashCode()] = new BlockingQueue<KeyValuePair<byte[], int>>(_maximumConnections * 10);
+                _receiveBufferQueue[messageState.Handler.GetHashCode()] = new BlockingQueue<KeyValuePair<byte[], int>>(10);
             }
             finally
             {
