@@ -11,7 +11,7 @@ A spinoff library of Dache that provides highly efficient, scalable, simple sock
 **EMAIL:** info@getdache.net
 
 
-VERSION HISTORY
+VERSION INFORMATION
 ============================================
 
 
