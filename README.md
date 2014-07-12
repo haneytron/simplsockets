@@ -1,40 +1,40 @@
-SIMPLSOCKETS 1.1.2
+SIMPLSOCKETS 1.2.0
 ===========
 
 
 A spinoff library of Dache that provides highly efficient, scalable, simple socket communication.
 
-**NUGET:** http://www.nuget.org/packages/SimplSockets
-
 **WEB:**   http://www.getdache.net
 
-**EMAIL:** info@getdache.net
+**EMAIL:** [info@getdache.net](mailto:info@getdache.net)
+
+**NUGET:** [SimplSockets](http://www.nuget.org/packages/SimplSockets)
 
 
 VERSION INFORMATION
 ============================================
 
 
-1.1.2
+1.2.0
 ------------------
 
-- Optimizations to initial buffer allocations and sizes which result in a substantially smaller memory footprint
+- SUBSTANTIALLY optimized performance and memory usage. Much less memory used and buffer object creation. The result is much faster sockets!
 
-- Heuristics-based pool population (20% allocated initially instead of 100%, will grow as needed)
+- BREAKING CHANGES: altered interfaces and methods to be more OO-friendly and to enable client and server to have access to same operations
 
-- 1/10 (or less) memory allocated for buffer collections when compared to previous versions.
+- Exposed events for MessageReceived and Error that you can hook into to receive (and process) messages, and to handle any communication errors
+
+- Pool and Blocking Queue optimizations
+
+- Refactored almost all code to be much more efficient
 
 
 INSTALLATION INSTRUCTIONS
 ============================================
 
 
-Just include the DLL in your project ([NuGet](http://www.nuget.org/packages/SimplSockets)) and then create the appropriate client or server object!
+Just include the DLL in your project ([NuGet](http://www.nuget.org/packages/SimplSockets)) and then create a SimplSocket!
 
-To create a client:
+To create a client or server:
 
-`var client = SimplSocket.CreateClient(...)`
-
-To create a server:
-
-`var server = SimplSocket.CreateServer(...)`
+`var clientOrServer = new SimplSocket()`
