@@ -42,8 +42,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BlockingQueue.cs" />
-    <Compile Include="ISimplSocketClient.cs" />
-    <Compile Include="ISimplSocketServer.cs" />
+    <Compile Include="ISimplSocket.cs" />
     <Compile Include="MessageReceivedArgs.cs" />
     <Compile Include="Pool.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

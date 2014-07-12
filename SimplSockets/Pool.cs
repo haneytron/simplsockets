@@ -33,7 +33,7 @@ namespace SimplSockets
         }
 
         /// <summary>
-        /// Pushes an item into the pool for later re-use.
+        /// Pushes an item into the pool for later re-use. The item will have its state reset.
         /// </summary>
         /// <param name="item">The item.</param>
         public void Push(T item)
@@ -42,6 +42,11 @@ namespace SimplSockets
             if (_queue.Count > _initialPoolCount)
             {
                 return;
+            }
+
+            if (_resetItemMethod != null)
+            {
+                _resetItemMethod(item);
             }
 
             lock (_queue)
@@ -53,42 +58,26 @@ namespace SimplSockets
         /// <summary>
         /// Pops an item out of the pool for use. The item will have its state reset.
         /// </summary>
-        /// <returns></returns>
+        /// <returns>An item.</returns>
         public T Pop()
         {
             T result = null;
 
-            // Cheap check
-            if (_queue.Count == 0)
-            {
-                result = _newItemMethod();
-                if (_resetItemMethod != null)
-                {
-                    _resetItemMethod(result);
-                }
-                return result;
-            }
-
             lock (_queue)
             {
                 // Double lock check
-                if (_queue.Count == 0)
+                if (_queue.Count > 0)
                 {
-                    result = _newItemMethod();
-                    if (_resetItemMethod != null)
-                    {
-                        _resetItemMethod(result);
-                    }
-                    return result;
+                    return _queue.Dequeue();
                 }
-
-                result = _queue.Dequeue();
-                if (_resetItemMethod != null)
-                {
-                    _resetItemMethod(result);
-                }
-                return result;
             }
+
+            result = _newItemMethod();
+            if (_resetItemMethod != null)
+            {
+                _resetItemMethod(result);
+            }
+            return result;
         }
     }
 }

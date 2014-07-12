@@ -6,6 +6,7 @@ namespace SimplSockets
 {
     /// <summary>
     /// A queue that wraps a regular generic queue but when empty will block Dequeue threads until an item is available.
+    /// This class is thread safe.
     /// </summary>
     /// <typeparam name="T">The type of the object contained in the queue.</typeparam>
     internal sealed class BlockingQueue<T>
