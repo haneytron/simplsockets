@@ -11,7 +11,7 @@ namespace SimplSockets
     /// <summary>
     /// Wraps sockets and provides intuitive, extremely efficient, scalable methods for client-server communication.
     /// </summary>
-    public class SimplSocket : ISimplSocket, IDisposable
+    public class SimplSocket : ISimplSocket
     {
         // The function that creates a new socket
         private readonly Func<Socket> _socketFunc = null;
@@ -53,8 +53,8 @@ namespace SimplSockets
         private readonly Pool<MessageState> _messageStatePool = null;
         // The pool of buffers
         private readonly Pool<byte[]> _bufferPool = null;
-        // The pool of receive messages
-        private readonly Pool<ReceivedMessage> _receiveMessagePool = null;
+        // The pool of received messages
+        private readonly Pool<ReceivedMessage> _receivedMessagePool = null;
 
         // The control bytes placeholder - the first 4 bytes are little endian message length, the last 4 are thread id
         private static readonly byte[] _controlBytesPlaceholder = new byte[] { 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -90,10 +90,10 @@ namespace SimplSockets
 
             _currentlyConnectedClients = new List<Socket>(maximumConnections);
 
-            _receiveBufferQueue = new Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>>(10);
+            _receiveBufferQueue = new Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>>(maximumConnections);
 
             // Initialize the client multiplexer
-            _clientMultiplexer = new Dictionary<int, MultiplexerData>(10);
+            _clientMultiplexer = new Dictionary<int, MultiplexerData>(64);
 
             // Create the pools
             _messageStatePool = new Pool<MessageState>(maximumConnections, () => new MessageState(), messageState =>
@@ -105,7 +105,7 @@ namespace SimplSockets
             });
             _manualResetEventPool = new Pool<ManualResetEvent>(maximumConnections, () => new ManualResetEvent(false), manualResetEvent => manualResetEvent.Reset());
             _bufferPool = new Pool<byte[]>(maximumConnections, () => new byte[messageBufferSize], null);
-            _receiveMessagePool = new Pool<ReceivedMessage>(maximumConnections, () => new ReceivedMessage(), receivedMessage =>
+            _receivedMessagePool = new Pool<ReceivedMessage>(maximumConnections, () => new ReceivedMessage(), receivedMessage =>
             {
                 receivedMessage.Message = null;
                 receivedMessage.Socket = null;
@@ -117,7 +117,7 @@ namespace SimplSockets
                 _messageStatePool.Push(new MessageState());
                 _manualResetEventPool.Push(new ManualResetEvent(false));
                 _bufferPool.Push(new byte[messageBufferSize]);
-                _receiveMessagePool.Push(new ReceivedMessage());
+                _receivedMessagePool.Push(new ReceivedMessage());
             }
         }
 
@@ -178,11 +178,12 @@ namespace SimplSockets
             messageState.Handler = _socket;
             messageState.Buffer = _bufferPool.Pop();
 
-            // Create receive queue for this client
+            // Create receive buffer queue for this client
+            var receiveBufferQueue = new BlockingQueue<KeyValuePair<byte[], int>>(64);
             _receiveBufferQueueLock.EnterWriteLock();
             try
             {
-                _receiveBufferQueue[messageState.Handler.GetHashCode()] = new BlockingQueue<KeyValuePair<byte[], int>>(10);
+                _receiveBufferQueue[messageState.Handler.GetHashCode()] = receiveBufferQueue;
             }
             finally
             {
@@ -196,7 +197,7 @@ namespace SimplSockets
             var processMessageState = _messageStatePool.Pop();
             processMessageState.Handler = _socket;
 
-            Task.Factory.StartNew(() => ProcessReceivedMessage(processMessageState));
+            Task.Factory.StartNew(() => ProcessReceivedMessage(processMessageState, receiveBufferQueue));
 
             return true;
         }
@@ -515,11 +516,12 @@ namespace SimplSockets
                 return;
             }
 
-            // Create receive queue for this client
+            // Create receive buffer queue for this client
+            var receiveBufferQueue = new BlockingQueue<KeyValuePair<byte[], int>>(64);
             _receiveBufferQueueLock.EnterWriteLock();
             try
             {
-                _receiveBufferQueue[messageState.Handler.GetHashCode()] = new BlockingQueue<KeyValuePair<byte[], int>>(10);
+                _receiveBufferQueue[messageState.Handler.GetHashCode()] = receiveBufferQueue;
             }
             finally
             {
@@ -529,9 +531,7 @@ namespace SimplSockets
             // Process all incoming messages
             var processMessageState = _messageStatePool.Pop();
             processMessageState.Handler = handler;
-
-            // Process all incoming messages
-            ProcessReceivedMessage(processMessageState);
+            ProcessReceivedMessage(processMessageState, receiveBufferQueue);
         }
 
         private void SendCallback(IAsyncResult asyncResult)
@@ -614,23 +614,8 @@ namespace SimplSockets
             }
         }
 
-        private void ProcessReceivedMessage(MessageState messageState)
+        private void ProcessReceivedMessage(MessageState messageState, BlockingQueue<KeyValuePair<byte[], int>> receiveBufferQueue)
         {
-            // Get the receive buffer queue
-            BlockingQueue<KeyValuePair<byte[], int>> queue = null;
-            _receiveBufferQueueLock.EnterReadLock();
-            try
-            {
-                if (!_receiveBufferQueue.TryGetValue(messageState.Handler.GetHashCode(), out queue))
-                {
-                    throw new Exception("FATAL: No receive queue created for current socket");
-                }
-            }
-            finally
-            {
-                _receiveBufferQueueLock.ExitReadLock();
-            }
-
             int controlBytesOffset = 0;
             byte[] protocolBuffer = new byte[_controlBytesPlaceholder.Length];
 
@@ -638,7 +623,7 @@ namespace SimplSockets
             while (_isDoingSomething)
             {
                 // Get the next buffer from the queue
-                var receiveBufferEntry = queue.Dequeue();
+                var receiveBufferEntry = receiveBufferQueue.Dequeue();
                 var buffer = receiveBufferEntry.Key;
                 int bytesRead = receiveBufferEntry.Value;
 
@@ -722,20 +707,23 @@ namespace SimplSockets
             }
 
             // No multiplexer
-            var receivedMessage = _receiveMessagePool.Pop();
+            var receivedMessage = _receivedMessagePool.Pop();
             receivedMessage.Socket = handler;
             receivedMessage.ThreadId = threadId;
             receivedMessage.Message = message;
 
+            // Fire the event if needed
             var messageReceived = MessageReceived;
             if (messageReceived != null)
             {
+                // Create the message received args
                 var messageReceivedArgs = new MessageReceivedArgs(receivedMessage);
+                // Fire the event
                 messageReceived(this, messageReceivedArgs);
             }
 
-            // Put the received message back on the pool
-            _receiveMessagePool.Push(receivedMessage);
+            // Place received message back in pool
+            _receivedMessagePool.Push(receivedMessage);
         }
 
         /// <summary>
@@ -790,6 +778,17 @@ namespace SimplSockets
             finally
             {
                 _currentlyConnectedClientsLock.ExitWriteLock();
+            }
+
+            // Remove receive queue for this client
+            _receiveBufferQueueLock.EnterWriteLock();
+            try
+            {
+                _receiveBufferQueue.Remove(socket.GetHashCode());
+            }
+            finally
+            {
+                _receiveBufferQueueLock.ExitWriteLock();
             }
 
             // Decrement the counter keeping track of the total number of clients connected to the server

@@ -1,4 +1,4 @@
-SIMPLSOCKETS 1.2.0
+SIMPLSOCKETS 1.2.1
 ===========
 
 
@@ -15,18 +15,12 @@ VERSION INFORMATION
 ============================================
 
 
-1.2.0
+1.2.1
 ------------------
 
-- SUBSTANTIALLY optimized performance and memory usage. Much less memory used and buffer object creation. The result is much faster sockets!
+- Very minor refactor of code
 
-- BREAKING CHANGES: altered interfaces and methods to be more OO-friendly and to enable client and server to have access to same operations
-
-- Exposed events for MessageReceived and Error that you can hook into to receive (and process) messages, and to handle any communication errors
-
-- Pool and Blocking Queue optimizations
-
-- Refactored almost all code to be much more efficient
+- Removed IDisposable from the SimplSocket implementation, leaving it only on the ISimplSocket interface.
 
 
 INSTALLATION INSTRUCTIONS
@@ -37,4 +31,4 @@ Just include the DLL in your project ([NuGet](http://www.nuget.org/packages/Simp
 
 To create a client or server:
 
-`var clientOrServer = new SimplSocket()`
+`var clientOrServer = new SimplSocket(...)`
