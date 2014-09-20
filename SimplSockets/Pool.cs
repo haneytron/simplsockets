@@ -23,8 +23,8 @@ namespace SimplSockets
         /// </summary>
         /// <param name="poolCount">The count of items in the pool.</param>
         /// <param name="newItemMethod">The method that creates a new item.</param>
-        /// <param name="resetItemMethod">The method that resets an item's state.</param>
-        public Pool(int poolCount, Func<T> newItemMethod, Action<T> resetItemMethod)
+        /// <param name="resetItemMethod">The method that resets an item's state. Optional.</param>
+        public Pool(int poolCount, Func<T> newItemMethod, Action<T> resetItemMethod = null)
         {
             _queue = new Queue<T>(poolCount);
             _initialPoolCount = poolCount;

@@ -66,7 +66,7 @@ namespace SimplSockets
         /// <param name="messageBufferSize">The message buffer size to use for send/receive.</param>
         /// <param name="maximumConnections">The maximum connections to allow to use the socket simultaneously.</param>
         /// <param name="useNagleAlgorithm">Whether or not to use the Nagle algorithm.</param>
-        public SimplSocket(Func<Socket> socketFunc, int messageBufferSize, int maximumConnections, bool useNagleAlgorithm)
+        public SimplSocket(Func<Socket> socketFunc, int messageBufferSize = 4096, int maximumConnections = 50, bool useNagleAlgorithm = false)
         {
             // Sanitize
             if (socketFunc == null)
@@ -104,7 +104,7 @@ namespace SimplSockets
                 messageState.BytesToRead = -1;
             });
             _manualResetEventPool = new Pool<ManualResetEvent>(maximumConnections, () => new ManualResetEvent(false), manualResetEvent => manualResetEvent.Reset());
-            _bufferPool = new Pool<byte[]>(maximumConnections, () => new byte[messageBufferSize], null);
+            _bufferPool = new Pool<byte[]>(maximumConnections, () => new byte[messageBufferSize]);
             _receivedMessagePool = new Pool<ReceivedMessage>(maximumConnections, () => new ReceivedMessage(), receivedMessage =>
             {
                 receivedMessage.Message = null;
