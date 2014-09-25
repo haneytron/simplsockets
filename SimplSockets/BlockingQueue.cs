@@ -60,5 +60,16 @@ namespace SimplSockets
                 return _queue.Dequeue();
             }
         }
+
+        /// <summary>
+        /// Clears the queue.
+        /// </summary>
+        public void Clear()
+        {
+            lock (_queue)
+            {
+                _queue.Clear();
+            }
+        }
     }
 }

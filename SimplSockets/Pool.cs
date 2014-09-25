@@ -30,6 +30,12 @@ namespace SimplSockets
             _initialPoolCount = poolCount;
             _newItemMethod = newItemMethod;
             _resetItemMethod = resetItemMethod;
+
+            // Create new items
+            for (int i = 0; i < poolCount; i++)
+            {
+                Push(newItemMethod());
+            }
         }
 
         /// <summary>

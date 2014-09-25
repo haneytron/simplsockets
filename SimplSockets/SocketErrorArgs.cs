@@ -8,17 +8,14 @@ namespace SimplSockets
     public class SocketErrorArgs : EventArgs
     {
         /// <summary>
-        /// The constructor.
+        /// Internal constructor.
         /// </summary>
-        /// <param name="errorMessage">The error message.</param>
-        internal SocketErrorArgs(string errorMessage)
-        {
-            ErrorMessage = errorMessage;
-        }
+        internal SocketErrorArgs() { }
 
         /// <summary>
-        /// The error message.
+        /// The exception.
         /// </summary>
-        public string ErrorMessage { get; private set; }
+        public Exception Exception { get; internal set; }
     }
 }
+

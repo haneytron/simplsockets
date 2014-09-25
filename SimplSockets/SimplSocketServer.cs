@@ -11,7 +11,7 @@ namespace SimplSockets
     /// <summary>
     /// Wraps sockets and provides intuitive, extremely efficient, scalable methods for client-server communication.
     /// </summary>
-    public class SimplSocket : ISimplSocket
+    public class SimplSocketServer : ISimplSocketServer
     {
         // The function that creates a new socket
         private readonly Func<Socket> _socketFunc = null;
@@ -26,35 +26,24 @@ namespace SimplSockets
         // Whether or not to use the Nagle algorithm
         private readonly bool _useNagleAlgorithm = false;
 
-        // Whether or not the socket is a server
-        private bool _isServer = false;
-
         // The receive buffer queue
         private readonly Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>> _receiveBufferQueue = null;
-        // The receive buffer queue lock
         private readonly ReaderWriterLockSlim _receiveBufferQueueLock = new ReaderWriterLockSlim();
+
+        // Whether or not the socket is currently listening
+        private volatile bool _isListening = false;
+        private readonly object _isListeningLock = new object();
 
         // The currently connected clients
         private readonly List<Socket> _currentlyConnectedClients = null;
-        // The currently connected clients lock
         private readonly ReaderWriterLockSlim _currentlyConnectedClientsLock = new ReaderWriterLockSlim();
-        // The number of currently connected clients
-        private int _currentlyConnectedClientCount = 0;
-        // Whether or not a connection currently exists
-        private volatile bool _isDoingSomething = false;
 
-        // The client multiplexer
-        private readonly Dictionary<int, MultiplexerData> _clientMultiplexer = null;
-        // The client multiplexer reader writer lock
-        private readonly ReaderWriterLockSlim _clientMultiplexerLock = new ReaderWriterLockSlim();
-        // The pool of manual reset events
-        private readonly Pool<ManualResetEvent> _manualResetEventPool = null;
-        // The pool of message states
+        // Various pools
         private readonly Pool<MessageState> _messageStatePool = null;
-        // The pool of buffers
         private readonly Pool<byte[]> _bufferPool = null;
-        // The pool of received messages
         private readonly Pool<ReceivedMessage> _receivedMessagePool = null;
+        private readonly Pool<MessageReceivedArgs> _messageReceivedArgsPool = null;
+        private readonly Pool<SocketErrorArgs> _socketErrorArgsPool = null;
 
         // The control bytes placeholder - the first 4 bytes are little endian message length, the last 4 are thread id
         private static readonly byte[] _controlBytesPlaceholder = new byte[] { 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -64,9 +53,9 @@ namespace SimplSockets
         /// </summary>
         /// <param name="socketFunc">The function that creates a new socket. Use this to specify your socket constructor and initialize settings.</param>
         /// <param name="messageBufferSize">The message buffer size to use for send/receive.</param>
-        /// <param name="maximumConnections">The maximum connections to allow to use the socket simultaneously.</param>
+        /// <param name="maximumConnections">The maximum number of connections to allow simultaneously.</param>
         /// <param name="useNagleAlgorithm">Whether or not to use the Nagle algorithm.</param>
-        public SimplSocket(Func<Socket> socketFunc, int messageBufferSize = 4096, int maximumConnections = 50, bool useNagleAlgorithm = false)
+        public SimplSocketServer(Func<Socket> socketFunc, int messageBufferSize = 4096, int maximumConnections = 50, bool useNagleAlgorithm = false)
         {
             // Sanitize
             if (socketFunc == null)
@@ -92,9 +81,6 @@ namespace SimplSockets
 
             _receiveBufferQueue = new Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>>(maximumConnections);
 
-            // Initialize the client multiplexer
-            _clientMultiplexer = new Dictionary<int, MultiplexerData>(64);
-
             // Create the pools
             _messageStatePool = new Pool<MessageState>(maximumConnections, () => new MessageState(), messageState =>
             {
@@ -103,123 +89,37 @@ namespace SimplSockets
                 messageState.ThreadId = -1;
                 messageState.BytesToRead = -1;
             });
-            _manualResetEventPool = new Pool<ManualResetEvent>(maximumConnections, () => new ManualResetEvent(false), manualResetEvent => manualResetEvent.Reset());
             _bufferPool = new Pool<byte[]>(maximumConnections, () => new byte[messageBufferSize]);
             _receivedMessagePool = new Pool<ReceivedMessage>(maximumConnections, () => new ReceivedMessage(), receivedMessage =>
             {
                 receivedMessage.Message = null;
                 receivedMessage.Socket = null;
             });
-
-            // Populate the pools at 20%
-            for (int i = 0; i < maximumConnections / 5; i++)
-            {
-                _messageStatePool.Push(new MessageState());
-                _manualResetEventPool.Push(new ManualResetEvent(false));
-                _bufferPool.Push(new byte[messageBufferSize]);
-                _receivedMessagePool.Push(new ReceivedMessage());
-            }
+            _messageReceivedArgsPool = new Pool<MessageReceivedArgs>(maximumConnections, () => new MessageReceivedArgs(), messageReceivedArgs => { messageReceivedArgs.ReceivedMessage = null; });
+            _socketErrorArgsPool = new Pool<SocketErrorArgs>(maximumConnections, () => new SocketErrorArgs(), socketErrorArgs => { socketErrorArgs.Exception = null; });
         }
 
         /// <summary>
-        /// Gets the currently connected client count.
-        /// </summary>
-        public int CurrentlyConnectedClientCount
-        {
-            get
-            {
-                return _currentlyConnectedClientCount;
-            }
-        }
-
-        /// <summary>
-        /// Connects to an endpoint. Once this is called, you must call Close before calling Connect or Listen again. The errorHandler method 
-        /// will not be called if the connection fails. Instead this method will return false.
-        /// </summary>
-        /// <param name="endPoint">The endpoint.</param>
-        /// <returns>true if connection is successful, false otherwise.</returns>
-        public bool Connect(EndPoint endPoint)
-        {
-            // Sanitize
-            if (_isDoingSomething)
-            {
-                throw new InvalidOperationException("socket is already in use");
-            }
-            if (endPoint == null)
-            {
-                throw new ArgumentNullException("endPoint");
-            }
-
-            _isDoingSomething = true;
-
-            // Create socket
-            _socket = _socketFunc();
-            // Turn on or off Nagle algorithm
-            _socket.NoDelay = !_useNagleAlgorithm;
-
-            // Do not proceed until we have room to do so
-            _maxConnectionsSemaphore.WaitOne();
-
-            Interlocked.Increment(ref _currentlyConnectedClientCount);
-
-            // Post a connect to the socket synchronously
-            try
-            {
-                _socket.Connect(endPoint);
-            }
-            catch (SocketException)
-            {
-                _isDoingSomething = false;
-                return false;
-            }
-
-            // Get a message state from the pool
-            var messageState = _messageStatePool.Pop();
-            messageState.Handler = _socket;
-            messageState.Buffer = _bufferPool.Pop();
-
-            // Create receive buffer queue for this client
-            var receiveBufferQueue = new BlockingQueue<KeyValuePair<byte[], int>>(64);
-            _receiveBufferQueueLock.EnterWriteLock();
-            try
-            {
-                _receiveBufferQueue[messageState.Handler.GetHashCode()] = receiveBufferQueue;
-            }
-            finally
-            {
-                _receiveBufferQueueLock.ExitWriteLock();
-            }
-
-            // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
-            _socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
-
-            // Process all incoming messages
-            var processMessageState = _messageStatePool.Pop();
-            processMessageState.Handler = _socket;
-
-            Task.Factory.StartNew(() => ProcessReceivedMessage(processMessageState, receiveBufferQueue));
-
-            return true;
-        }
-
-        /// <summary>
-        /// Begin listening for incoming connections. Once this is called, you must call Close before calling Connect or Listen again.
+        /// Begin listening for incoming connections. Once this is called, you must call Close before calling Listen again.
         /// </summary>
         /// <param name="localEndpoint">The local endpoint to listen on.</param>
         public void Listen(EndPoint localEndpoint)
         {
             // Sanitize
-            if (_isDoingSomething)
-            {
-                throw new InvalidOperationException("socket is already in use");
-            }
             if (localEndpoint == null)
             {
                 throw new ArgumentNullException("localEndpoint");
             }
 
-            _isDoingSomething = true;
-            _isServer = true;
+            lock (_isListeningLock)
+            {
+                if (_isListening)
+                {
+                    throw new InvalidOperationException("socket is already in use");
+                }
+
+                _isListening = true;
+            }
 
             // Create socket
             _socket = _socketFunc();
@@ -243,32 +143,10 @@ namespace SimplSockets
         }
 
         /// <summary>
-        /// Closes the connection. Once this is called, you can call Connect or Listen again to start a new socket connection.
-        /// </summary>
-        public void Close()
-        {
-            // Close the socket
-            try
-            {
-                _socket.Shutdown(SocketShutdown.Both);
-            }
-            catch
-            {
-                // Ignore
-            }
-
-            _socket.Close();
-            // No longer doing something
-            _isDoingSomething = false;
-            _isServer = false;
-        }
-
-        /// <summary>
-        /// Sends a message to the other end without waiting for a response (one-way communication).
-        /// NOTE: when the server calls this method, it will broadcast to all clients.
+        /// Broadcasts a message to all connected clients without waiting for a response (one-way communication).
         /// </summary>
         /// <param name="message">The message to send.</param>
-        public void Send(byte[] message)
+        public void Broadcast(byte[] message)
         {
             // Sanitize
             if (message == null)
@@ -282,103 +160,31 @@ namespace SimplSockets
             var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
 
             // Do the send
+            _currentlyConnectedClientsLock.EnterReadLock();
             try
             {
-                // Check if client send
-                if (!_isServer)
-                {
-                    _socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket);
-                    return;
-                }
 
-                // Server send
-                _currentlyConnectedClientsLock.EnterReadLock();
-                try
+                foreach (var client in _currentlyConnectedClients)
                 {
-
-                    foreach (var client in _currentlyConnectedClients)
+                    try
                     {
-                        try
-                        {
-                            client.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, client);
-                        }
-                        catch
-                        {
-                            // Swallow it
-                        }
+                        client.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, client);
+                    }
+                    catch
+                    {
+                        // Swallow it
+                        // TODO: queue it up for disconnection?
                     }
                 }
-                finally
-                {
-                    _currentlyConnectedClientsLock.ExitReadLock();
-                }
             }
-            catch (SocketException ex)
+            finally
             {
-                HandleCommunicationError(_socket, ex);
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                _currentlyConnectedClientsLock.ExitReadLock();
             }
         }
 
         /// <summary>
-        /// Sends a message to the server and receives the response to that message.
-        /// NOTE: a server cannot call this method, it will result in an exception.
-        /// </summary>
-        /// <param name="message">The message to send.</param>
-        /// <returns>The response message.</returns>
-        public byte[] SendReceive(byte[] message)
-        {
-            // Sanitize
-            if (message == null)
-            {
-                throw new ArgumentNullException("message");
-            }
-            if (_isServer)
-            {
-                throw new InvalidOperationException("server cannot call this method");
-            }
-
-            // Get the current thread ID
-            int threadId = Thread.CurrentThread.ManagedThreadId;
-
-            // Enroll in the multiplexer
-            var multiplexerData = EnrollMultiplexer(threadId);
-
-            var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
-
-            // Do the send
-            try
-            {
-                _socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket);
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(_socket, ex);
-                return null;
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
-                return null;
-            }
-
-            // Wait for our message to go ahead from the receive callback
-            multiplexerData.ManualResetEvent.WaitOne();
-
-            // Now get the command string
-            var result = multiplexerData.Message;
-
-            // Finally remove the thread from the multiplexer
-            UnenrollMultiplexer(threadId);
-
-            return result;
-        }
-
-        /// <summary>
-        /// Sends a reply message back to the original sender.
+        /// Sends a message back to the client.
         /// </summary>
         /// <param name="message">The reply message to send.</param>
         /// <param name="receivedMessage">The received message which is being replied to.</param>
@@ -403,13 +209,46 @@ namespace SimplSockets
             }
             catch (SocketException ex)
             {
-                HandleCommunicationError(receivedMessage.Socket, ex);
-                return;
+                HandleCommunicationError(_socket, ex);
             }
             catch (ObjectDisposedException)
             {
                 // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
-                return;
+            }
+        }
+
+        /// <summary>
+        /// Closes the connection. Once this is called, you can call Listen again.
+        /// </summary>
+        public void Close()
+        {
+            // Close the socket
+            try
+            {
+                _socket.Shutdown(SocketShutdown.Both);
+            }
+            catch
+            {
+                // Ignore
+            }
+
+            _socket.Close();
+
+            // No longer connected
+            lock (_isListeningLock)
+            {
+                _isListening = false;
+            }
+        }
+
+        /// <summary>
+        /// Gets the currently connected client count.
+        /// </summary>
+        public int CurrentlyConnectedClientCount
+        {
+            get
+            {
+                return _currentlyConnectedClients.Count;
             }
         }
 
@@ -444,8 +283,6 @@ namespace SimplSockets
 
         private void AcceptCallback(IAsyncResult asyncResult)
         {
-            Interlocked.Increment(ref _currentlyConnectedClientCount);
-
             // Get the client handler socket
             Socket handler = null;
             try
@@ -454,7 +291,7 @@ namespace SimplSockets
             }
             catch (SocketException ex)
             {
-                HandleCommunicationError(_socket, ex);
+                HandleCommunicationError(handler, ex);
                 return;
             }
             catch (ObjectDisposedException)
@@ -547,12 +384,10 @@ namespace SimplSockets
             catch (SocketException ex)
             {
                 HandleCommunicationError(socket, ex);
-                return;
             }
             catch (ObjectDisposedException)
             {
                 // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
-                return;
             }
         }
 
@@ -620,7 +455,7 @@ namespace SimplSockets
             byte[] protocolBuffer = new byte[_controlBytesPlaceholder.Length];
 
             // Loop until socket is done
-            while (_isDoingSomething)
+            while (_isListening)
             {
                 // Get the next buffer from the queue
                 var receiveBufferEntry = receiveBufferQueue.Dequeue();
@@ -697,29 +532,22 @@ namespace SimplSockets
 
         private void CompleteMessage(Socket handler, int threadId, byte[] message)
         {
-            // Try and signal multiplexer
-            var multiplexerData = GetMultiplexerData(threadId);
-            if (multiplexerData != null)
-            {
-                multiplexerData.Message = message;
-                SignalMultiplexer(threadId);
-                return;
-            }
-
-            // No multiplexer
             var receivedMessage = _receivedMessagePool.Pop();
             receivedMessage.Socket = handler;
             receivedMessage.ThreadId = threadId;
             receivedMessage.Message = message;
 
-            // Fire the event if needed
+            // Fire the event if needed 
             var messageReceived = MessageReceived;
             if (messageReceived != null)
             {
-                // Create the message received args
-                var messageReceivedArgs = new MessageReceivedArgs(receivedMessage);
-                // Fire the event
+                // Create the message received args 
+                var messageReceivedArgs = _messageReceivedArgsPool.Pop();
+                messageReceivedArgs.ReceivedMessage = receivedMessage;
+                // Fire the event 
                 messageReceived(this, messageReceivedArgs);
+                // Back in the pool
+                _messageReceivedArgsPool.Push(messageReceivedArgs);
             }
 
             // Place received message back in pool
@@ -755,21 +583,7 @@ namespace SimplSockets
                 socket.Close();
             }
 
-            // Release all multiplexer clients by signalling them
-            _clientMultiplexerLock.EnterReadLock();
-            try
-            {
-                foreach (var multiplexerData in _clientMultiplexer.Values)
-                {
-                    multiplexerData.ManualResetEvent.Set();
-                }
-            }
-            finally
-            {
-                _clientMultiplexerLock.ExitReadLock();
-            }
-
-            // Unenroll in currently connected client sockets
+            // Unenroll from currently connected client sockets
             _currentlyConnectedClientsLock.EnterWriteLock();
             try
             {
@@ -791,18 +605,17 @@ namespace SimplSockets
                 _receiveBufferQueueLock.ExitWriteLock();
             }
 
-            // Decrement the counter keeping track of the total number of clients connected to the server
-            Interlocked.Decrement(ref _currentlyConnectedClientCount);
-
             // Release one from the max connections semaphore
             _maxConnectionsSemaphore.Release();
 
-            // Raise the error event
+            // Raise the error event 
             var error = Error;
             if (error != null)
             {
-                var socketErrorArgs = new SocketErrorArgs(ex.Message);
+                var socketErrorArgs = _socketErrorArgsPool.Pop();
+                socketErrorArgs.Exception = ex;
                 error(this, socketErrorArgs);
+                _socketErrorArgsPool.Push(socketErrorArgs);
             }
         }
 
@@ -812,26 +625,6 @@ namespace SimplSockets
             public Socket Handler = null;
             public int ThreadId = -1;
             public int BytesToRead = -1;
-        }
-
-        /// <summary>
-        /// A received message.
-        /// </summary>
-        public class ReceivedMessage
-        {
-            internal Socket Socket;
-            internal int ThreadId;
-
-            /// <summary>
-            /// The message bytes.
-            /// </summary>
-            public byte[] Message;
-        }
-
-        private class MultiplexerData
-        {
-            public byte[] Message { get; set; }
-            public ManualResetEvent ManualResetEvent { get; set; }
         }
 
         private static void SetControlBytes(byte[] buffer, int length, int threadId)
@@ -852,100 +645,6 @@ namespace SimplSockets
         {
             messageLength = (buffer[3] << 24) | (buffer[2] << 16) | (buffer[1] << 8) | buffer[0];
             threadId = (buffer[7] << 24) | (buffer[6] << 16) | (buffer[5] << 8) | buffer[4];
-        }
-
-        private MultiplexerData GetMultiplexerData(int threadId)
-        {
-            MultiplexerData multiplexerData = null;
-            _clientMultiplexerLock.EnterReadLock();
-            try
-            {
-                // Get from multiplexer by thread ID
-                if (!_clientMultiplexer.TryGetValue(threadId, out multiplexerData))
-                {
-                    return null;
-                }
-
-                return multiplexerData;
-            }
-            finally
-            {
-                _clientMultiplexerLock.ExitReadLock();
-            }
-        }
-
-        private void SignalMultiplexer(int threadId)
-        {
-            MultiplexerData multiplexerData = null;
-            _clientMultiplexerLock.EnterReadLock();
-            try
-            {
-                // Get from multiplexer by thread ID
-                if (!_clientMultiplexer.TryGetValue(threadId, out multiplexerData))
-                {
-                    throw new Exception("FATAL: multiplexer was missing entry for Thread ID " + threadId);
-                }
-
-                multiplexerData.ManualResetEvent.Set();
-            }
-            finally
-            {
-                _clientMultiplexerLock.ExitReadLock();
-            }
-        }
-
-        private MultiplexerData EnrollMultiplexer(int threadId)
-        {
-            var multiplexerData = new MultiplexerData { ManualResetEvent = _manualResetEventPool.Pop() };
-
-            _clientMultiplexerLock.EnterWriteLock();
-            try
-            {
-                // Add manual reset event for current thread
-                _clientMultiplexer.Add(threadId, multiplexerData);
-            }
-            catch
-            {
-                throw new Exception("FATAL: multiplexer tried to add duplicate entry for Thread ID " + threadId);
-            }
-            finally
-            {
-                _clientMultiplexerLock.ExitWriteLock();
-            }
-
-            return multiplexerData;
-        }
-
-        private void UnenrollMultiplexer(int threadId)
-        {
-            MultiplexerData multiplexerData = null;
-            _clientMultiplexerLock.EnterUpgradeableReadLock();
-            try
-            {
-                // Get from multiplexer by thread ID
-                if (!_clientMultiplexer.TryGetValue(threadId, out multiplexerData))
-                {
-                    throw new Exception("FATAL: multiplexer was missing entry for Thread ID " + threadId);
-                }
-
-                _clientMultiplexerLock.EnterWriteLock();
-                try
-                {
-                    // Remove entry
-                    _clientMultiplexer.Remove(threadId);
-                }
-                finally
-                {
-                    _clientMultiplexerLock.ExitWriteLock();
-                }
-            }
-            finally
-            {
-                _clientMultiplexerLock.ExitUpgradeableReadLock();
-            }
-
-            // Now return objects to pools
-            _manualResetEventPool.Push(multiplexerData.ManualResetEvent);
         }
     }
 }

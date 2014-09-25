@@ -8,17 +8,14 @@ namespace SimplSockets
     public class MessageReceivedArgs : EventArgs
     {
         /// <summary>
-        /// The constructor.
+        /// Internal constructor.
         /// </summary>
-        /// <param name="receivedMessage">The received message.</param>
-        internal MessageReceivedArgs(SimplSocket.ReceivedMessage receivedMessage)
-        {
-            ReceivedMessage = receivedMessage;
-        }
+        internal MessageReceivedArgs() { }
 
         /// <summary>
         /// The received message.
         /// </summary>
-        public SimplSocket.ReceivedMessage ReceivedMessage { get; private set; }
+        public ReceivedMessage ReceivedMessage { get; internal set; }
     }
 }
+
