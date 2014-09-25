@@ -6,7 +6,7 @@ A spinoff library of Dache that provides highly efficient, scalable, simple sock
 
 **WEB:**   http://www.dache.io
 
-**EMAIL:** [info@getdache.net](mailto:info@dache.io)
+**EMAIL:** [info@dache.io](mailto:info@dache.io)
 
 **NUGET:** [SimplSockets](http://www.nuget.org/packages/SimplSockets)
 
