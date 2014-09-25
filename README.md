@@ -1,12 +1,12 @@
-SIMPLSOCKETS 1.2.1
+SIMPLSOCKETS 1.3.0
 ===========
 
 
 A spinoff library of Dache that provides highly efficient, scalable, simple socket communication.
 
-**WEB:**   http://www.getdache.net
+**WEB:**   http://www.dache.io
 
-**EMAIL:** [info@getdache.net](mailto:info@getdache.net)
+**EMAIL:** [info@getdache.net](mailto:info@dache.io)
 
 **NUGET:** [SimplSockets](http://www.nuget.org/packages/SimplSockets)
 
@@ -15,12 +15,16 @@ VERSION INFORMATION
 ============================================
 
 
-1.2.1
+1.3.0
 ------------------
 
-- Very minor refactor of code
+- **BREAKING CHANGE**: `SimplSocket` has been divided into `SimplSocketClient` and `SimplSocketServer` to better reflect behaviour and use
 
-- Removed IDisposable from the SimplSocket implementation, leaving it only on the ISimplSocket interface.
+- Fixed bugs related to asynchronous multiplexer state handling which could cause unhandled exceptions if a thread experienced an error while another thread was waiting for data
+
+- Even more efficient communication via multiplexer data re-use and pools
+
+- Code clean-up and optimization
 
 
 INSTALLATION INSTRUCTIONS
@@ -31,4 +35,6 @@ Just include the DLL in your project ([NuGet](http://www.nuget.org/packages/Simp
 
 To create a client or server:
 
-`var clientOrServer = new SimplSocket(...)`
+`var client = new SimplSocketClient(...)`
+
+`var server = new SimplSocketServer(...)`
