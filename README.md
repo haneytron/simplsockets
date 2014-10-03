@@ -1,4 +1,4 @@
-SIMPLSOCKETS 1.3.0
+SIMPLSOCKETS 1.3.1
 ===========
 
 
@@ -15,16 +15,20 @@ VERSION INFORMATION
 ============================================
 
 
-1.3.0
+1.3.1
 ------------------
 
-- **BREAKING CHANGE**: `SimplSocket` has been divided into `SimplSocketClient` and `SimplSocketServer` to better reflect behaviour and use
 
-- Fixed bugs related to asynchronous multiplexer state handling which could cause unhandled exceptions if a thread experienced an error while another thread was waiting for data
+ - Keep-alive used to ensure proper disconnect when one side hangs up and TCP does not detect it
 
-- Even more efficient communication via multiplexer data re-use and pools
 
-- Code clean-up and optimization
+ - Much more robust communication via simplification of code
+
+
+ - Fixed numerous communication bugs that could cause crashes
+
+
+ - Better performance via better object pooling and re-use
 
 
 INSTALLATION INSTRUCTIONS
