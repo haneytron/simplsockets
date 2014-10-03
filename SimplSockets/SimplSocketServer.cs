@@ -26,10 +26,6 @@ namespace SimplSockets
         // Whether or not to use the Nagle algorithm
         private readonly bool _useNagleAlgorithm = false;
 
-        // The receive buffer queue
-        private readonly Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>> _receiveBufferQueue = null;
-        private readonly ReaderWriterLockSlim _receiveBufferQueueLock = new ReaderWriterLockSlim();
-
         // Whether or not the socket is currently listening
         private volatile bool _isListening = false;
         private readonly object _isListeningLock = new object();
@@ -79,12 +75,11 @@ namespace SimplSockets
 
             _currentlyConnectedClients = new List<Socket>(maximumConnections);
 
-            _receiveBufferQueue = new Dictionary<int, BlockingQueue<KeyValuePair<byte[], int>>>(maximumConnections);
-
             // Create the pools
             _messageStatePool = new Pool<MessageState>(maximumConnections, () => new MessageState(), messageState =>
             {
                 messageState.Buffer = null;
+                messageState.ReceiveBufferQueue = null;
                 messageState.Handler = null;
                 messageState.ThreadId = -1;
                 messageState.BytesToRead = -1;
@@ -337,6 +332,8 @@ namespace SimplSockets
             var messageState = _messageStatePool.Pop();
             messageState.Handler = handler;
             messageState.Buffer = _bufferPool.Pop();
+            // Create receive buffer queue for this client
+            messageState.ReceiveBufferQueue = new BlockingQueue<KeyValuePair<byte[], int>>(_maximumConnections * 10);
 
             try
             {
@@ -353,22 +350,54 @@ namespace SimplSockets
                 return;
             }
 
-            // Create receive buffer queue for this client
-            var receiveBufferQueue = new BlockingQueue<KeyValuePair<byte[], int>>(64);
-            _receiveBufferQueueLock.EnterWriteLock();
-            try
-            {
-                _receiveBufferQueue[messageState.Handler.GetHashCode()] = receiveBufferQueue;
-            }
-            finally
-            {
-                _receiveBufferQueueLock.ExitWriteLock();
-            }
+            // Spin up the keep-alive
+            KeepAlive(handler);
 
             // Process all incoming messages
             var processMessageState = _messageStatePool.Pop();
+            processMessageState.ReceiveBufferQueue = messageState.ReceiveBufferQueue;
             processMessageState.Handler = handler;
-            ProcessReceivedMessage(processMessageState, receiveBufferQueue);
+
+            ProcessReceivedMessage(processMessageState);
+        }
+
+        private void KeepAlive(Socket handler)
+        {
+            int availableTest = 0;
+
+            // If the socket is disposed, we're done
+            try
+            {
+                availableTest = handler.Available;
+            }
+            catch (ObjectDisposedException)
+            {
+                // Peace out!
+                return;
+            }
+
+            // Do the keep-alive
+            try
+            {
+                handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler);
+            }
+            catch (SocketException ex)
+            {
+                HandleCommunicationError(handler, ex);
+            }
+            catch (ObjectDisposedException)
+            {
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+            }
+        }
+
+        private void KeepAliveCallback(IAsyncResult asyncResult)
+        {
+            SendCallback(asyncResult);
+
+            Thread.Sleep(1000);
+
+            KeepAlive((Socket)asyncResult.AsyncState);
         }
 
         private void SendCallback(IAsyncResult asyncResult)
@@ -416,21 +445,7 @@ namespace SimplSockets
             if (bytesRead > 0)
             {
                 // Add buffer to queue
-                BlockingQueue<KeyValuePair<byte[], int>> queue = null;
-                _receiveBufferQueueLock.EnterReadLock();
-                try
-                {
-                    if (!_receiveBufferQueue.TryGetValue(messageState.Handler.GetHashCode(), out queue))
-                    {
-                        throw new Exception("FATAL: No receive queue created for current socket");
-                    }
-                }
-                finally
-                {
-                    _receiveBufferQueueLock.ExitReadLock();
-                }
-
-                queue.Enqueue(new KeyValuePair<byte[], int>(messageState.Buffer, bytesRead));
+                messageState.ReceiveBufferQueue.Enqueue(new KeyValuePair<byte[], int>(messageState.Buffer, bytesRead));
 
                 // Post receive on the handler socket
                 messageState.Buffer = _bufferPool.Pop();
@@ -449,16 +464,29 @@ namespace SimplSockets
             }
         }
 
-        private void ProcessReceivedMessage(MessageState messageState, BlockingQueue<KeyValuePair<byte[], int>> receiveBufferQueue)
+        private void ProcessReceivedMessage(MessageState messageState)
         {
+            int availableTest = 0;
             int controlBytesOffset = 0;
             byte[] protocolBuffer = new byte[_controlBytesPlaceholder.Length];
 
             // Loop until socket is done
             while (_isListening)
             {
+                // If the socket is disposed, we're done
+                try
+                {
+                    availableTest = messageState.Handler.Available;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Peace out!
+                    _messageStatePool.Push(messageState);
+                    return;
+                }
+
                 // Get the next buffer from the queue
-                var receiveBufferEntry = receiveBufferQueue.Dequeue();
+                var receiveBufferEntry = messageState.ReceiveBufferQueue.Dequeue();
                 var buffer = receiveBufferEntry.Key;
                 int bytesRead = receiveBufferEntry.Value;
 
@@ -496,27 +524,34 @@ namespace SimplSockets
 
                     // Have control bytes, get message bytes
 
-                    // Initialize buffer if needed
-                    if (messageState.Buffer == null)
+                    // SPECIAL CASE: if empty message, skip a bunch of stuff
+                    if (messageState.BytesToRead != 0)
                     {
-                        messageState.Buffer = new byte[messageState.BytesToRead];
+                        // Initialize buffer if needed
+                        if (messageState.Buffer == null)
+                        {
+                            messageState.Buffer = new byte[messageState.BytesToRead];
+                        }
+
+                        var bytesAvailable = bytesRead - currentOffset;
+
+                        var bytesToCopy = Math.Min(messageState.BytesToRead, bytesAvailable);
+
+                        // Copy bytes to buffer
+                        Buffer.BlockCopy(buffer, currentOffset, messageState.Buffer, messageState.Buffer.Length - messageState.BytesToRead, bytesToCopy);
+
+                        currentOffset += bytesToCopy;
+                        messageState.BytesToRead -= bytesToCopy;
                     }
-
-                    var bytesAvailable = bytesRead - currentOffset;
-
-                    var bytesToCopy = Math.Min(messageState.BytesToRead, bytesAvailable);
-
-                    // Copy bytes to buffer
-                    Buffer.BlockCopy(buffer, currentOffset, messageState.Buffer, messageState.Buffer.Length - messageState.BytesToRead, bytesToCopy);
-
-                    currentOffset += bytesToCopy;
-                    messageState.BytesToRead -= bytesToCopy;
 
                     // Check if we're done
                     if (messageState.BytesToRead == 0)
                     {
-                        // Done, add to complete received messages
-                        CompleteMessage(messageState.Handler, messageState.ThreadId, messageState.Buffer);
+                        if (messageState.Buffer != null)
+                        {
+                            // Done, add to complete received messages
+                            CompleteMessage(messageState.Handler, messageState.ThreadId, messageState.Buffer);
+                        }
 
                         // Reset message state
                         messageState.Buffer = null;
@@ -557,7 +592,7 @@ namespace SimplSockets
         /// <summary>
         /// Handles an error in socket communication.
         /// </summary>
-        /// <param name="socket">The socket that raised the exception.</param>
+        /// <param name="socket">The socket.</param>
         /// <param name="ex">The exception that the socket raised.</param>
         private void HandleCommunicationError(Socket socket, Exception ex)
         {
@@ -594,17 +629,6 @@ namespace SimplSockets
                 _currentlyConnectedClientsLock.ExitWriteLock();
             }
 
-            // Remove receive queue for this client
-            _receiveBufferQueueLock.EnterWriteLock();
-            try
-            {
-                _receiveBufferQueue.Remove(socket.GetHashCode());
-            }
-            finally
-            {
-                _receiveBufferQueueLock.ExitWriteLock();
-            }
-
             // Release one from the max connections semaphore
             _maxConnectionsSemaphore.Release();
 
@@ -622,6 +646,7 @@ namespace SimplSockets
         private class MessageState
         {
             public byte[] Buffer = null;
+            public BlockingQueue<KeyValuePair<byte[], int>> ReceiveBufferQueue = null;
             public Socket Handler = null;
             public int ThreadId = -1;
             public int BytesToRead = -1;
