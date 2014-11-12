@@ -24,6 +24,8 @@ namespace SimplSockets
         private readonly int _communicationTimeout = 0;
         // Whether or not to use the Nagle algorithm
         private readonly bool _useNagleAlgorithm = false;
+        // The linger option
+        private readonly LingerOption _lingerOption = new LingerOption(true, 0);
 
         // The receive buffer queue
         private readonly BlockingQueue<KeyValuePair<byte[], int>> _receiveBufferQueue = null;
@@ -132,11 +134,16 @@ namespace SimplSockets
             _socket = _socketFunc();
             // Turn on or off Nagle algorithm
             _socket.NoDelay = !_useNagleAlgorithm;
+            // Set the linger state
+            _socket.LingerState = _lingerOption;
 
-            // Post a connect to the socket synchronously
+            // Post a connect to the socket asynchronously
             try
             {
-                _socket.BeginConnect(endPoint, ConnectCallback, null);
+                if (!_socket.BeginConnect(endPoint, ConnectCallback, null).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                {
+                    HandleCommunicationTimeout(_socket);
+                }
             }
             catch (SocketException ex)
             {
@@ -144,7 +151,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
             }
         }
 
@@ -168,7 +175,10 @@ namespace SimplSockets
             // Do the send
             try
             {
-                _socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket);
+                if (!_socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                {
+                    HandleCommunicationTimeout(_socket);
+                }
             }
             catch (SocketException ex)
             {
@@ -176,7 +186,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
             }
         }
 
@@ -204,7 +214,11 @@ namespace SimplSockets
             // Do the send
             try
             {
-                _socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket);
+                if (!_socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                {
+                    HandleCommunicationTimeout(_socket);
+                    return null;
+                }
             }
             catch (SocketException ex)
             {
@@ -213,13 +227,18 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
                 return null;
             }
 
             // Wait for our message to go ahead from the receive callback, or until the timeout is reached
             if (!multiplexerData.ManualResetEvent.WaitOne(_communicationTimeout))
             {
+                HandleCommunicationError(_socket, new TimeoutException("The connection timed out before the response message was received"));
+
+                // Reset the multiplexer
+                multiplexerData.ManualResetEvent.Reset();
+
                 // No signal
                 return null;
             }
@@ -302,7 +321,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
                 return;
             }
 
@@ -320,7 +339,21 @@ namespace SimplSockets
             messageState.Buffer = _bufferPool.Pop();
 
             // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
-            _socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
+            try
+            {
+                if (!_socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                {
+                    HandleCommunicationTimeout(_socket);
+                }
+            }
+            catch (SocketException ex)
+            {
+                HandleCommunicationError(_socket, ex);
+            }
+            catch (ObjectDisposedException)
+            {
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+            }
 
             // Spin up the keep-alive
             KeepAlive(_socket);
@@ -350,7 +383,10 @@ namespace SimplSockets
             // Do the keep-alive
             try
             {
-                handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler);
+                if (!_socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                {
+                    HandleCommunicationTimeout(_socket);
+                }
             }
             catch (SocketException ex)
             {
@@ -358,7 +394,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
             }
         }
 
@@ -388,7 +424,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
                 return;
             }
         }
@@ -411,7 +447,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
                 return;
             }
 
@@ -424,7 +460,10 @@ namespace SimplSockets
                 messageState.Buffer = _bufferPool.Pop();
                 try
                 {
-                    messageState.Handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
+                    if (!messageState.Handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                    {
+                        HandleCommunicationTimeout(_socket);
+                    }
                 }
                 catch (SocketException ex)
                 {
@@ -432,7 +471,7 @@ namespace SimplSockets
                 }
                 catch (ObjectDisposedException)
                 {
-                    // If disposed, handle communication error was already done and we're just catching up on other threads. Supress it.
+                    // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
                 }
             }
         }
@@ -557,6 +596,15 @@ namespace SimplSockets
 
             // Place received message back in pool
             _receivedMessagePool.Push(receivedMessage);
+        }
+
+        /// <summary>
+        /// Handles a timeout in socket communication.
+        /// </summary>
+        /// <param name="socket">The socket that has timed out.</param>
+        private void HandleCommunicationTimeout(Socket socket)
+        {
+            HandleCommunicationError(socket, new TimeoutException(string.Format("The timeout ({0}ms) expired prior to the socket operation completing", _communicationTimeout)));
         }
 
         /// <summary>
@@ -689,17 +737,15 @@ namespace SimplSockets
             _clientMultiplexerLock.EnterReadLock();
             try
             {
-                _clientMultiplexer.TryGetValue(threadId, out multiplexerData);
+                if (!_clientMultiplexer.TryGetValue(threadId, out multiplexerData))
+                {
+                    // Nothing to do
+                    return;
+                }
             }
             finally
             {
                 _clientMultiplexerLock.ExitReadLock();
-            }
-
-            if (multiplexerData == null)
-            {
-                // Nothing to do
-                return;
             }
 
             multiplexerData.ManualResetEvent.Set();
