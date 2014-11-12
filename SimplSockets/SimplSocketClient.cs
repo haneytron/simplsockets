@@ -140,10 +140,7 @@ namespace SimplSockets
             // Post a connect to the socket asynchronously
             try
             {
-                if (!_socket.BeginConnect(endPoint, ConnectCallback, null).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                {
-                    HandleCommunicationTimeout(_socket);
-                }
+                _socket.BeginConnect(endPoint, ConnectCallback, null);
             }
             catch (SocketException ex)
             {
@@ -175,10 +172,7 @@ namespace SimplSockets
             // Do the send
             try
             {
-                if (!_socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                {
-                    HandleCommunicationTimeout(_socket);
-                }
+                _socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket);
             }
             catch (SocketException ex)
             {
@@ -214,11 +208,7 @@ namespace SimplSockets
             // Do the send
             try
             {
-                if (!_socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                {
-                    HandleCommunicationTimeout(_socket);
-                    return null;
-                }
+                _socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, _socket);
             }
             catch (SocketException ex)
             {
@@ -341,10 +331,7 @@ namespace SimplSockets
             // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
             try
             {
-                if (!_socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                {
-                    HandleCommunicationTimeout(_socket);
-                }
+                _socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
             }
             catch (SocketException ex)
             {
@@ -460,10 +447,7 @@ namespace SimplSockets
                 messageState.Buffer = _bufferPool.Pop();
                 try
                 {
-                    if (!messageState.Handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                    {
-                        HandleCommunicationTimeout(_socket);
-                    }
+                    messageState.Handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
                 }
                 catch (SocketException ex)
                 {

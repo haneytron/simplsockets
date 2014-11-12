@@ -210,10 +210,7 @@ namespace SimplSockets
             // Do the send to the appropriate client
             try
             {
-                if (!receivedMessage.Socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, receivedMessage.Socket).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                {
-                    HandleCommunicationTimeout(_socket);
-                }
+                receivedMessage.Socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, receivedMessage.Socket);
             }
             catch (SocketException ex)
             {
@@ -355,11 +352,7 @@ namespace SimplSockets
 
             try
             {
-                if (!handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                {
-                    HandleCommunicationTimeout(_socket);
-                    return;
-                }
+                handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
             }
             catch (SocketException ex)
             {
@@ -476,10 +469,7 @@ namespace SimplSockets
                 messageState.Buffer = _bufferPool.Pop();
                 try
                 {
-                    if (!messageState.Handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState).AsyncWaitHandle.WaitOne(_communicationTimeout))
-                    {
-                        HandleCommunicationTimeout(_socket);
-                    }
+                    messageState.Handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
                 }
                 catch (SocketException ex)
                 {
