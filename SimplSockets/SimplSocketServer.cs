@@ -394,10 +394,12 @@ namespace SimplSockets
             // Do the keep-alive
             try
             {
-                if (!handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                var handle = handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle;
+                if (!handle.WaitOne(_communicationTimeout))
                 {
                     HandleCommunicationTimeout(_socket);
                 }
+                handle.Close();
             }
             catch (SocketException ex)
             {

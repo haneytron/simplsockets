@@ -370,10 +370,12 @@ namespace SimplSockets
             // Do the keep-alive
             try
             {
-                if (!_socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle.WaitOne(_communicationTimeout))
+                var handle = _socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle;
+                if (!handle.WaitOne(_communicationTimeout))
                 {
                     HandleCommunicationTimeout(_socket);
                 }
+                handle.Close();
             }
             catch (SocketException ex)
             {
