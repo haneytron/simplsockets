@@ -1,4 +1,4 @@
-SIMPLSOCKETS 1.3.1
+SIMPLSOCKETS
 ===========
 
 
@@ -9,26 +9,6 @@ A spinoff library of Dache that provides highly efficient, scalable, simple sock
 **EMAIL:** [info@dache.io](mailto:info@dache.io)
 
 **NUGET:** [SimplSockets](http://www.nuget.org/packages/SimplSockets)
-
-
-VERSION INFORMATION
-============================================
-
-
-1.3.1
-------------------
-
-
- - Keep-alive used to ensure proper disconnect when one side hangs up and TCP does not detect it
-
-
- - Much more robust communication via simplification of code
-
-
- - Fixed numerous communication bugs that could cause crashes
-
-
- - Better performance via better object pooling and re-use
 
 
 INSTALLATION INSTRUCTIONS
