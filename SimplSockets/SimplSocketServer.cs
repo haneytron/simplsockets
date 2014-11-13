@@ -647,13 +647,12 @@ namespace SimplSockets
                 socket.Close();
             }
 
-            // Unenroll from currently connected client sockets
-            var currentlyConnectedClientsCount = 0;
+            // Try to unenroll from currently connected client sockets
             _currentlyConnectedClientsLock.EnterWriteLock();
+            var shouldRelease = false;
             try
             {
-                _currentlyConnectedClients.Remove(socket);
-                currentlyConnectedClientsCount = _currentlyConnectedClients.Count;
+                shouldRelease = _currentlyConnectedClients.Remove(socket);
             }
             finally
             {
@@ -661,7 +660,7 @@ namespace SimplSockets
             }
 
             // Release one from the max connections semaphore if needed
-            if (currentlyConnectedClientsCount > 0)
+            if (shouldRelease)
             {
                 _maxConnectionsSemaphore.Release();
             }
