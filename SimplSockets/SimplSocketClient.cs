@@ -22,6 +22,8 @@ namespace SimplSockets
         private readonly int _messageBufferSize = 0;
         // The communication timeout, in milliseconds
         private readonly int _communicationTimeout = 0;
+        // The maximum message size
+        private readonly int _maxMessageSize = 0;
         // Whether or not to use the Nagle algorithm
         private readonly bool _useNagleAlgorithm = false;
         // The linger option
@@ -58,8 +60,9 @@ namespace SimplSockets
         /// <param name="socketFunc">The function that creates a new socket. Use this to specify your socket constructor and initialize settings.</param>
         /// <param name="messageBufferSize">The message buffer size to use for send/receive.</param>
         /// <param name="communicationTimeout">The communication timeout, in milliseconds.</param>
+        /// <param name="maxMessageSize">The maximum message size.</param>
         /// <param name="useNagleAlgorithm">Whether or not to use the Nagle algorithm.</param>
-        public SimplSocketClient(Func<Socket> socketFunc, int messageBufferSize = 4096, int communicationTimeout = 10000, bool useNagleAlgorithm = false)
+        public SimplSocketClient(Func<Socket> socketFunc, int messageBufferSize = 4096, int communicationTimeout = 10000, int maxMessageSize = 100 * 1024 * 1024, bool useNagleAlgorithm = false)
         {
             // Sanitize
             if (socketFunc == null)
@@ -74,10 +77,15 @@ namespace SimplSockets
             {
                 throw new ArgumentException("must be >= 5000", "communicationTimeout");
             }
+            if (maxMessageSize < 1024)
+            {
+                throw new ArgumentException("must be >= 1024", "maxMessageSize");
+            }
 
             _socketFunc = socketFunc;
             _messageBufferSize = messageBufferSize;
             _communicationTimeout = communicationTimeout;
+            _maxMessageSize = maxMessageSize;
             _useNagleAlgorithm = useNagleAlgorithm;
 
             _receiveBufferQueue = new BlockingQueue<KeyValuePair<byte[], int>>(PREDICTED_THREAD_COUNT);
@@ -474,6 +482,13 @@ namespace SimplSockets
 
                             // Reset control bytes offset
                             controlBytesOffset = 0;
+
+                            // Ensure message is not larger than maximum message size
+                            if (messageState.BytesToRead > _maxMessageSize)
+                            {
+                                HandleCommunicationError(messageState.Handler, new InvalidOperationException(string.Format("message of length {0} exceeds maximum message length of {1}", messageState.BytesToRead, _maxMessageSize)));
+                                return;
+                            }
                         }
 
                         // Continue the loop
