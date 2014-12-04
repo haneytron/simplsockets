@@ -112,7 +112,8 @@ namespace SimplSockets
         /// Connects to an endpoint. Once this is called, you must call Close before calling Connect again.
         /// </summary>
         /// <param name="endPoint">The endpoint.</param>
-        public void Connect(EndPoint endPoint)
+        /// <returns>true if connection is successful, false otherwise.</returns>
+        public bool Connect(EndPoint endPoint)
         {
             // Sanitize
             if (endPoint == null)
@@ -137,10 +138,31 @@ namespace SimplSockets
             // Set the linger state
             _socket.LingerState = _lingerOption;
 
-            // Post a connect to the socket asynchronously
+            // Post a connect to the socket synchronously
             try
             {
-                _socket.BeginConnect(endPoint, ConnectCallback, null);
+                _socket.Connect(endPoint);
+            }
+            catch (SocketException ex)
+            {
+                HandleCommunicationError(_socket, ex);
+                return false;
+            }
+            catch (ObjectDisposedException)
+            {
+                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                return false;
+            }
+
+            // Get a message state from the pool
+            var messageState = _messageStatePool.Pop();
+            messageState.Handler = _socket;
+            messageState.Buffer = _bufferPool.Pop();
+
+            // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
+            try
+            {
+                _socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
             }
             catch (SocketException ex)
             {
@@ -150,6 +172,17 @@ namespace SimplSockets
             {
                 // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
             }
+
+            // Spin up the keep-alive
+            KeepAlive(_socket);
+
+            var processMessageState = _messageStatePool.Pop();
+            processMessageState.Handler = _socket;
+
+            // Process all incoming messages on a separate thread
+            Task.Factory.StartNew(() => ProcessReceivedMessage(processMessageState));
+
+            return true;
         }
 
         /// <summary>
@@ -264,11 +297,6 @@ namespace SimplSockets
         }
 
         /// <summary>
-        /// An event that is fired when the client successfully connects to the server. Hook into this to do something when a connection succeeds.
-        /// </summary>
-        public event EventHandler SuccessfullyConnected;
-
-        /// <summary>
         /// An event that is fired whenever a message is received. Hook into this to process messages and potentially call Reply to send a response.
         /// </summary>
         public event EventHandler<MessageReceivedArgs> MessageReceived;
@@ -295,61 +323,6 @@ namespace SimplSockets
             // Set the control bytes on the message
             SetControlBytes(messageWithControlBytes, message.Length, threadId);
             return messageWithControlBytes;
-        }
-
-        private void ConnectCallback(IAsyncResult asyncResult)
-        {
-            // Complete the connection
-            try
-            {
-                _socket.EndConnect(asyncResult);
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(_socket, ex);
-                return;
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
-                return;
-            }
-
-            // Fire the event if needed
-            var successfullyConnected = SuccessfullyConnected;
-            if (successfullyConnected != null)
-            {
-                // Fire the event 
-                successfullyConnected(this, EventArgs.Empty);
-            }
-
-            // Get a message state from the pool
-            var messageState = _messageStatePool.Pop();
-            messageState.Handler = _socket;
-            messageState.Buffer = _bufferPool.Pop();
-
-            // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
-            try
-            {
-                _socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(_socket, ex);
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
-            }
-
-            // Spin up the keep-alive
-            KeepAlive(_socket);
-
-            // Process all incoming messages
-            var processMessageState = _messageStatePool.Pop();
-            processMessageState.Handler = _socket;
-
-            ProcessReceivedMessage(processMessageState);
         }
 
         private void KeepAlive(Socket handler)

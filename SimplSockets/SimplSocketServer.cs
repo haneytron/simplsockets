@@ -258,6 +258,11 @@ namespace SimplSockets
         }
 
         /// <summary>
+        /// An event that is fired when a client successfully connects to the server. Hook into this to do something when a connection succeeds.
+        /// </summary>
+        public event EventHandler ClientConnected;
+
+        /// <summary>
         /// An event that is fired whenever a message is received. Hook into this to process messages and potentially call Reply to send a response.
         /// </summary>
         public event EventHandler<MessageReceivedArgs> MessageReceived;
@@ -341,6 +346,14 @@ namespace SimplSockets
             finally
             {
                 _currentlyConnectedClientsLock.ExitWriteLock();
+            }
+
+            // Fire the event if needed
+            var clientConnected = ClientConnected;
+            if (clientConnected != null)
+            {
+                // Fire the event 
+                clientConnected(this, EventArgs.Empty);
             }
 
             // Get message state

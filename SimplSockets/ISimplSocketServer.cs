@@ -38,6 +38,11 @@ namespace SimplSockets
         int CurrentlyConnectedClientCount { get; }
 
         /// <summary>
+        /// An event that is fired when a client successfully connects to the server. Hook into this to do something when a connection succeeds.
+        /// </summary>
+        event EventHandler ClientConnected;
+
+        /// <summary>
         /// An event that is fired whenever a message is received. Hook into this to process messages and potentially call Reply to send a response.
         /// </summary>
         event EventHandler<MessageReceivedArgs> MessageReceived;
