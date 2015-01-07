@@ -333,6 +333,7 @@ namespace SimplSockets
             return messageWithControlBytes;
         }
 
+        private readonly AutoResetEvent _keepAliveResetEvent = new AutoResetEvent(false);
         private void KeepAlive(Socket handler)
         {
             int availableTest = 0;
@@ -351,12 +352,11 @@ namespace SimplSockets
             // Do the keep-alive
             try
             {
-                var handle = _socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle;
-                if (!handle.WaitOne(_communicationTimeout))
+                _socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler);
+                if (!_keepAliveResetEvent.WaitOne(_communicationTimeout))
                 {
                     HandleCommunicationTimeout(_socket);
                 }
-                handle.Close();
             }
             catch (SocketException ex)
             {
@@ -371,6 +371,7 @@ namespace SimplSockets
         private void KeepAliveCallback(IAsyncResult asyncResult)
         {
             SendCallback(asyncResult);
+            _keepAliveResetEvent.Set();
 
             Thread.Sleep(1000);
 
