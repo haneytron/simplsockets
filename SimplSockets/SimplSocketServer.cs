@@ -397,17 +397,17 @@ namespace SimplSockets
             ProcessReceivedMessage(processMessageState);
         }
 
-        private readonly AutoResetEvent _keepAliveResetEvent = new AutoResetEvent(false);
         private void KeepAlive(Socket handler)
         {
             // Do the keep-alive
             try
             {
-                handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler);
-                if (!_keepAliveResetEvent.WaitOne(_communicationTimeout))
+                var waitHandle = handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle;
+                if (!waitHandle.WaitOne(_communicationTimeout))
                 {
                     HandleCommunicationTimeout(handler);
                 }
+                waitHandle.Close();
             }
             catch (SocketException ex)
             {
@@ -422,7 +422,6 @@ namespace SimplSockets
         private void KeepAliveCallback(IAsyncResult asyncResult)
         {
             SendCallback(asyncResult);
-            _keepAliveResetEvent.Set();
 
             Thread.Sleep(1000);
 
