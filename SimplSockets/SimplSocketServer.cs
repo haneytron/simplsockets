@@ -151,7 +151,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
             }
         }
 
@@ -226,7 +226,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
             }
         }
 
@@ -314,7 +314,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                 return;
             }
 
@@ -335,7 +335,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                 return;
             }
 
@@ -382,7 +382,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                 return;
             }
 
@@ -400,26 +400,13 @@ namespace SimplSockets
         private readonly AutoResetEvent _keepAliveResetEvent = new AutoResetEvent(false);
         private void KeepAlive(Socket handler)
         {
-            int availableTest = 0;
-
-            // If the socket is disposed, we're done
-            try
-            {
-                availableTest = handler.Available;
-            }
-            catch (ObjectDisposedException)
-            {
-                // Peace out!
-                return;
-            }
-
             // Do the keep-alive
             try
             {
                 handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler);
                 if (!_keepAliveResetEvent.WaitOne(_communicationTimeout))
                 {
-                    HandleCommunicationTimeout(_socket);
+                    HandleCommunicationTimeout(handler);
                 }
             }
             catch (SocketException ex)
@@ -428,7 +415,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
             }
         }
 
@@ -458,7 +445,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
             }
         }
 
@@ -480,7 +467,7 @@ namespace SimplSockets
             }
             catch (ObjectDisposedException)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                 return;
             }
 
@@ -501,7 +488,7 @@ namespace SimplSockets
                 }
                 catch (ObjectDisposedException)
                 {
-                    // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                 }
             }
         }
