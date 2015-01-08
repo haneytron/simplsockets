@@ -136,61 +136,61 @@ namespace SimplSockets
                     throw new InvalidOperationException("socket is already in use");
                 }
 
+                // Create socket
+                _socket = _socketFunc();
+                // Turn on or off Nagle algorithm
+                _socket.NoDelay = !_useNagleAlgorithm;
+                // Set the linger state
+                _socket.LingerState = _lingerOption;
+
+                // Post a connect to the socket synchronously
+                try
+                {
+                    _socket.Connect(endPoint);
+                }
+                catch (SocketException ex)
+                {
+                    HandleCommunicationError(_socket, ex);
+                    return false;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
+                    return false;
+                }
+
+                // Get a message state from the pool
+                var messageState = _messageStatePool.Pop();
+                messageState.Handler = _socket;
+                messageState.Buffer = _bufferPool.Pop();
+
+                // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
+                try
+                {
+                    _socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
+                }
+                catch (SocketException ex)
+                {
+                    HandleCommunicationError(_socket, ex);
+                    return false;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
+                    return false;
+                }
+
+                // Spin up the keep-alive
+                KeepAlive();
+
+                var processMessageState = _messageStatePool.Pop();
+                processMessageState.Handler = _socket;
+
+                // Process all incoming messages on a separate thread
+                Task.Factory.StartNew(() => ProcessReceivedMessage(processMessageState));
+
                 _isConnected = true;
             }
-
-            // Create socket
-            _socket = _socketFunc();
-            // Turn on or off Nagle algorithm
-            _socket.NoDelay = !_useNagleAlgorithm;
-            // Set the linger state
-            _socket.LingerState = _lingerOption;
-
-            // Post a connect to the socket synchronously
-            try
-            {
-                _socket.Connect(endPoint);
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(_socket, ex);
-                return false;
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-                return false;
-            }
-
-            // Get a message state from the pool
-            var messageState = _messageStatePool.Pop();
-            messageState.Handler = _socket;
-            messageState.Buffer = _bufferPool.Pop();
-
-            // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
-            try
-            {
-                _socket.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(_socket, ex);
-                return false;
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-                return false;
-            }
-
-            // Spin up the keep-alive
-            KeepAlive();
-
-            var processMessageState = _messageStatePool.Pop();
-            processMessageState.Handler = _socket;
-
-            // Process all incoming messages on a separate thread
-            Task.Factory.StartNew(() => ProcessReceivedMessage(processMessageState));
 
             return true;
         }
@@ -338,6 +338,11 @@ namespace SimplSockets
         private readonly AutoResetEvent _keepAliveResetEvent = new AutoResetEvent(false);
         private void KeepAlive()
         {
+            if (!_isConnected)
+            {
+                return;
+            }
+
             // Do the keep-alive
             try
             {

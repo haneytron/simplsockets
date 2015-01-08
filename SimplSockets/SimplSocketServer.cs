@@ -397,21 +397,34 @@ namespace SimplSockets
             ProcessReceivedMessage(processMessageState);
         }
 
-        private void KeepAlive(Socket handler)
+        private void KeepAlive(Socket socket)
         {
+            _currentlyConnectedClientsLock.EnterReadLock();
+            try
+            {
+                if (!_currentlyConnectedClients.Contains(socket))
+                {
+                    return;
+                }
+            }
+            finally
+            {
+                _currentlyConnectedClientsLock.ExitReadLock();
+            }
+
             // Do the keep-alive
             try
             {
-                var waitHandle = handler.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, handler).AsyncWaitHandle;
+                var waitHandle = socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, socket).AsyncWaitHandle;
                 if (!waitHandle.WaitOne(_communicationTimeout))
                 {
-                    HandleCommunicationTimeout(handler);
+                    HandleCommunicationTimeout(socket);
                 }
                 waitHandle.Close();
             }
             catch (SocketException ex)
             {
-                HandleCommunicationError(handler, ex);
+                HandleCommunicationError(socket, ex);
             }
             catch (ObjectDisposedException)
             {
