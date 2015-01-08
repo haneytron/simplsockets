@@ -175,10 +175,12 @@ namespace SimplSockets
             catch (SocketException ex)
             {
                 HandleCommunicationError(_socket, ex);
+                return false;
             }
             catch (ObjectDisposedException)
             {
                 // If disposed, handle communication error was already done and we're just catching up on other threads. Surpress it.
+                return false;
             }
 
             // Spin up the keep-alive
