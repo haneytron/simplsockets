@@ -181,7 +181,7 @@ namespace SimplSockets
                 }
 
                 // Spin up the keep-alive
-                KeepAlive();
+                KeepAlive(_socket);
 
                 var processMessageState = _messageStatePool.Pop();
                 processMessageState.Handler = _socket;
@@ -336,7 +336,7 @@ namespace SimplSockets
         }
 
         private readonly AutoResetEvent _keepAliveResetEvent = new AutoResetEvent(false);
-        private void KeepAlive()
+        private void KeepAlive(Socket socket)
         {
             if (!_isConnected)
             {
@@ -346,15 +346,15 @@ namespace SimplSockets
             // Do the keep-alive
             try
             {
-                _socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, _socket);
+                socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, socket);
                 if (!_keepAliveResetEvent.WaitOne(_communicationTimeout))
                 {
-                    HandleCommunicationTimeout(_socket);
+                    HandleCommunicationTimeout(socket);
                 }
             }
             catch (SocketException ex)
             {
-                HandleCommunicationError(_socket, ex);
+                HandleCommunicationError(socket, ex);
             }
             catch (ObjectDisposedException)
             {
@@ -369,7 +369,7 @@ namespace SimplSockets
 
             Thread.Sleep(1000);
 
-            KeepAlive();
+            KeepAlive((Socket)asyncResult.AsyncState);
         }
 
         private void SendCallback(IAsyncResult asyncResult)
