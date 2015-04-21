@@ -235,10 +235,7 @@ namespace SimplSockets
             {
                 foreach (var client in bustedClients)
                 {
-                    var remoteIpEndPoint = client.RemoteEndPoint as IPEndPoint;
-                    var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
-
-                    HandleCommunicationError(client, new Exception(string.Format("Broadcast Send to {0} failed", ipAddress)));
+                    HandleCommunicationError(client, new Exception("Broadcast Send failed"));
                 }
             }
         }
@@ -373,9 +370,9 @@ namespace SimplSockets
                 {
                     socket.Send(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0);
                 }
-                catch (SocketException ex)
+                catch (SocketException)
                 {
-                    HandleCommunicationError(socket, ex);
+                    HandleCommunicationError(socket, new Exception("Keep Alive failed"));
                     break;
                 }
                 catch (ObjectDisposedException)
@@ -411,10 +408,7 @@ namespace SimplSockets
             // Check for error
             if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                var remoteIpEndPoint = socket.RemoteEndPoint as IPEndPoint;
-                var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
-
-                HandleCommunicationError(socket, new Exception(string.Format("Accept handshake with {0} failed", ipAddress)));
+                HandleCommunicationError(socket, new Exception("Accept handshake failed"));
             }
 
             var handler = socketAsyncEventArgs.AcceptSocket;
@@ -517,10 +511,7 @@ namespace SimplSockets
             // Check for error
             if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                var remoteIpEndPoint = socket.RemoteEndPoint as IPEndPoint;
-                var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
-
-                HandleCommunicationError(socket, new Exception(string.Format("Send to {0} failed", ipAddress)));
+                HandleCommunicationError(socket, new Exception("Send failed"));
             }
 
             _socketAsyncEventArgsPool.Push(socketAsyncEventArgs);
@@ -531,10 +522,7 @@ namespace SimplSockets
             // Check for error
             if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                var remoteIpEndPoint = socket.RemoteEndPoint as IPEndPoint;
-                var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
-
-                HandleCommunicationError(socket, new Exception(string.Format("Receive from {0} failed", ipAddress)));
+                HandleCommunicationError(socket, new Exception("Receive failed"));
             }
 
             // Get the message state
