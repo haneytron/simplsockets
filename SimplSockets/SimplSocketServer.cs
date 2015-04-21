@@ -40,9 +40,12 @@ namespace SimplSockets
         private readonly List<Socket> _currentlyConnectedClients = null;
         private readonly ReaderWriterLockSlim _currentlyConnectedClientsLock = new ReaderWriterLockSlim();
 
+        // The currently connected client receive queues
+        private readonly Dictionary<Socket, BlockingQueue<SocketAsyncEventArgs>> _currentlyConnectedClientsReceiveQueues = null;
+        private readonly ReaderWriterLockSlim _currentlyConnectedClientsReceiveQueuesLock = new ReaderWriterLockSlim();
+
         // Various pools
-        private readonly Pool<MessageState> _messageStatePool = null;
-        private readonly Pool<byte[]> _bufferPool = null;
+        private readonly Pool<SocketAsyncEventArgs> _socketAsyncEventArgsPool = null;
         private readonly Pool<ReceivedMessage> _receivedMessagePool = null;
         private readonly Pool<MessageReceivedArgs> _messageReceivedArgsPool = null;
         private readonly Pool<SocketErrorArgs> _socketErrorArgsPool = null;
@@ -66,9 +69,9 @@ namespace SimplSockets
             {
                 throw new ArgumentNullException("socketFunc");
             }
-            if (messageBufferSize < 128)
+            if (messageBufferSize < 512)
             {
-                throw new ArgumentException("must be >= 128", "messageBufferSize");
+                throw new ArgumentException("must be >= 512", "messageBufferSize");
             }
             if (communicationTimeout < 5000)
             {
@@ -92,17 +95,16 @@ namespace SimplSockets
             _useNagleAlgorithm = useNagleAlgorithm;
 
             _currentlyConnectedClients = new List<Socket>(maximumConnections);
+            _currentlyConnectedClientsReceiveQueues = new Dictionary<Socket, BlockingQueue<SocketAsyncEventArgs>>(maximumConnections);
 
             // Create the pools
-            _messageStatePool = new Pool<MessageState>(maximumConnections, () => new MessageState(), messageState =>
+            _socketAsyncEventArgsPool = new Pool<SocketAsyncEventArgs>(maximumConnections, () =>
             {
-                messageState.Buffer = null;
-                messageState.ReceiveBufferQueue = null;
-                messageState.Handler = null;
-                messageState.ThreadId = -1;
-                messageState.BytesToRead = -1;
+                var poolItem = new SocketAsyncEventArgs();
+                poolItem.SetBuffer(new byte[messageBufferSize], 0, messageBufferSize);
+                poolItem.Completed += OperationCallback;
+                return poolItem;
             });
-            _bufferPool = new Pool<byte[]>(maximumConnections, () => new byte[messageBufferSize]);
             _receivedMessagePool = new Pool<ReceivedMessage>(maximumConnections, () => new ReceivedMessage(), receivedMessage =>
             {
                 receivedMessage.Message = null;
@@ -142,8 +144,19 @@ namespace SimplSockets
                 _socket.Bind(localEndpoint);
                 _socket.Listen(_maximumConnections);
 
+                var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+                
+                // Ensure enough room in buffer, needs 2 * (sizeof(SOCKADDR_STORAGE + 16) bytes per https://msdn.microsoft.com/en-us/library/system.net.sockets.socket.acceptasync(v=vs.110).aspx
+                if (socketAsyncEventArgs.Count < _messageBufferSize)
+                {
+                    socketAsyncEventArgs.SetBuffer(0, _messageBufferSize);
+                }
+
                 // Post accept on the listening socket
-                _socket.BeginAccept(AcceptCallback, null);
+                if (!_socket.AcceptAsync(socketAsyncEventArgs))
+                {
+                    OperationCallback(_socket, socketAsyncEventArgs);
+                }
             }
             catch (SocketException ex)
             {
@@ -172,6 +185,8 @@ namespace SimplSockets
 
             var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
 
+            List<Socket> bustedClients = null;
+
             // Do the send
             _currentlyConnectedClientsLock.EnterReadLock();
             try
@@ -179,20 +194,52 @@ namespace SimplSockets
 
                 foreach (var client in _currentlyConnectedClients)
                 {
+                    var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+
+                    // Copy message over
+                    if (messageWithControlBytes.Length > socketAsyncEventArgs.Buffer.Length)
+                    {
+                        socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
+                    }
+                    else
+                    {
+                        Buffer.BlockCopy(messageWithControlBytes, 0, socketAsyncEventArgs.Buffer, 0, messageWithControlBytes.Length);
+                        socketAsyncEventArgs.SetBuffer(0, messageWithControlBytes.Length);
+                    }
+
                     try
                     {
-                        client.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, client);
+                        if (!client.SendAsync(socketAsyncEventArgs))
+                        {
+                            OperationCallback(client, socketAsyncEventArgs);
+                        }
                     }
                     catch
                     {
-                        // Swallow it
-                        // TODO: queue it up for disconnection?
+                        // Mark for disconnection
+                        if (bustedClients == null)
+                        {
+                            bustedClients = new List<Socket>();
+                        }
+
+                        bustedClients.Add(client);
                     }
                 }
             }
             finally
             {
                 _currentlyConnectedClientsLock.ExitReadLock();
+            }
+
+            if (bustedClients != null)
+            {
+                foreach (var client in bustedClients)
+                {
+                    var remoteIpEndPoint = client.RemoteEndPoint as IPEndPoint;
+                    var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
+
+                    HandleCommunicationError(client, new Exception(string.Format("Broadcast Send to {0} failed", ipAddress)));
+                }
             }
         }
 
@@ -215,10 +262,26 @@ namespace SimplSockets
 
             var messageWithControlBytes = AppendControlBytesToMessage(message, receivedMessage.ThreadId);
 
+            var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+
+            // Copy message over
+            if (messageWithControlBytes.Length > socketAsyncEventArgs.Buffer.Length)
+            {
+                socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
+            }
+            else
+            {
+                Buffer.BlockCopy(messageWithControlBytes, 0, socketAsyncEventArgs.Buffer, 0, messageWithControlBytes.Length);
+                socketAsyncEventArgs.SetBuffer(0, messageWithControlBytes.Length);
+            }
+
             // Do the send to the appropriate client
             try
             {
-                receivedMessage.Socket.BeginSend(messageWithControlBytes, 0, messageWithControlBytes.Length, 0, SendCallback, receivedMessage.Socket);
+                if (!receivedMessage.Socket.SendAsync(socketAsyncEventArgs))
+                {
+                    OperationCallback(receivedMessage.Socket, socketAsyncEventArgs);
+                }
             }
             catch (SocketException ex)
             {
@@ -299,34 +362,83 @@ namespace SimplSockets
             return messageWithControlBytes;
         }
 
-        private void AcceptCallback(IAsyncResult asyncResult)
+        private void KeepAlive(Socket socket)
         {
-            // Get the client handler socket
-            Socket handler = null;
-            try
+            socket.SendTimeout = _communicationTimeout;
+
+            while (true)
             {
-                handler = _socket.EndAccept(asyncResult);
+                // Do the keep-alive
+                try
+                {
+                    socket.Send(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0);
+                }
+                catch (SocketException ex)
+                {
+                    HandleCommunicationError(socket, ex);
+                    break;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
+                    break;
+                }
+
+                Thread.Sleep(1000);
             }
-            catch (SocketException ex)
+        }
+
+        private void OperationCallback(object sender, SocketAsyncEventArgs socketAsyncEventArgs)
+        {
+            switch (socketAsyncEventArgs.LastOperation)
             {
-                HandleCommunicationError(handler, ex);
-                return;
+                case SocketAsyncOperation.Receive:
+                    ReceiveCallback((Socket)sender, socketAsyncEventArgs);
+                    break;
+                case SocketAsyncOperation.Send:
+                    SendCallback((Socket)sender, socketAsyncEventArgs);
+                    break;
+                case SocketAsyncOperation.Accept:
+                    AcceptCallback((Socket)sender, socketAsyncEventArgs);
+                    break;
+                default:
+                    throw new InvalidOperationException("Unknown case called, should program something for this");
             }
-            catch (ObjectDisposedException)
+        }
+
+        private void AcceptCallback(Socket socket, SocketAsyncEventArgs socketAsyncEventArgs)
+        {
+            // Check for error
+            if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-                return;
+                var remoteIpEndPoint = socket.RemoteEndPoint as IPEndPoint;
+                var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
+
+                HandleCommunicationError(socket, new Exception(string.Format("Accept handshake with {0} failed", ipAddress)));
             }
+
+            var handler = socketAsyncEventArgs.AcceptSocket;
 
             // Turn on or off Nagle algorithm
             handler.NoDelay = !_useNagleAlgorithm;
             // Set the linger state
             handler.LingerState = _lingerOption;
 
+            var acceptSocketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+
+            // Ensure enough room in buffer, needs 2 * (sizeof(SOCKADDR_STORAGE + 16) bytes per https://msdn.microsoft.com/en-us/library/system.net.sockets.socket.acceptasync(v=vs.110).aspx
+            if (acceptSocketAsyncEventArgs.Count < _messageBufferSize)
+            {
+                acceptSocketAsyncEventArgs.SetBuffer(0, _messageBufferSize);
+            }
+
             // Post accept on the listening socket
             try
             {
-                _socket.BeginAccept(AcceptCallback, null);
+                if (!_socket.AcceptAsync(acceptSocketAsyncEventArgs))
+                {
+                    OperationCallback(_socket, acceptSocketAsyncEventArgs);
+                }
             }
             catch (SocketException ex)
             {
@@ -339,10 +451,11 @@ namespace SimplSockets
                 return;
             }
 
-            // Do not proceed until we have room to do so
-            if (!_maxConnectionsSemaphore.WaitOne(_communicationTimeout))
+            // If we are at max clients, disconnect
+            if (!_maxConnectionsSemaphore.WaitOne(1000))
             {
                 handler.Close();
+                return;
             }
 
             // Enroll in currently connected client sockets
@@ -364,16 +477,23 @@ namespace SimplSockets
                 clientConnected(this, EventArgs.Empty);
             }
 
-            // Get message state
-            var messageState = _messageStatePool.Pop();
-            messageState.Handler = handler;
-            messageState.Buffer = _bufferPool.Pop();
             // Create receive buffer queue for this client
-            messageState.ReceiveBufferQueue = new BlockingQueue<KeyValuePair<byte[], int>>(_maximumConnections * 10);
+            _currentlyConnectedClientsReceiveQueuesLock.EnterWriteLock();
+            try
+            {
+                _currentlyConnectedClientsReceiveQueues.Add(handler, new BlockingQueue<SocketAsyncEventArgs>(_maximumConnections * 10));
+            }
+            finally
+            {
+                _currentlyConnectedClientsReceiveQueuesLock.ExitWriteLock();
+            }
 
             try
             {
-                handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
+                if (!handler.ReceiveAsync(socketAsyncEventArgs))
+                {
+                    OperationCallback(handler, socketAsyncEventArgs);
+                }
             }
             catch (SocketException ex)
             {
@@ -387,116 +507,73 @@ namespace SimplSockets
             }
 
             // Spin up the keep-alive
-            KeepAlive(handler);
+            Task.Factory.StartNew(() => KeepAlive(handler));
 
-            // Process all incoming messages
-            var processMessageState = _messageStatePool.Pop();
-            processMessageState.ReceiveBufferQueue = messageState.ReceiveBufferQueue;
-            processMessageState.Handler = handler;
-
-            ProcessReceivedMessage(processMessageState);
+            ProcessReceivedMessage(handler);
         }
 
-        private void KeepAlive(Socket socket)
+        private void SendCallback(Socket socket, SocketAsyncEventArgs socketAsyncEventArgs)
         {
-            _currentlyConnectedClientsLock.EnterReadLock();
-            try
+            // Check for error
+            if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                if (!_currentlyConnectedClients.Contains(socket))
-                {
-                    return;
-                }
-            }
-            finally
-            {
-                _currentlyConnectedClientsLock.ExitReadLock();
+                var remoteIpEndPoint = socket.RemoteEndPoint as IPEndPoint;
+                var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
+
+                HandleCommunicationError(socket, new Exception(string.Format("Send to {0} failed", ipAddress)));
             }
 
-            // Do the keep-alive
-            try
-            {
-                var waitHandle = socket.BeginSend(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0, KeepAliveCallback, socket).AsyncWaitHandle;
-                if (!waitHandle.WaitOne(_communicationTimeout))
-                {
-                    HandleCommunicationTimeout(socket);
-                }
-                waitHandle.Close();
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(socket, ex);
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-            }
+            _socketAsyncEventArgsPool.Push(socketAsyncEventArgs);
         }
 
-        private void KeepAliveCallback(IAsyncResult asyncResult)
+        private void ReceiveCallback(Socket socket, SocketAsyncEventArgs socketAsyncEventArgs)
         {
-            SendCallback(asyncResult);
-
-            Thread.Sleep(1000);
-
-            KeepAlive((Socket)asyncResult.AsyncState);
-        }
-
-        private void SendCallback(IAsyncResult asyncResult)
-        {
-            // Get the socket to complete on
-            Socket socket = (Socket)asyncResult.AsyncState;
-
-            // Complete the send
-            try
+            // Check for error
+            if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                socket.EndSend(asyncResult);
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(socket, ex);
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-            }
-        }
+                var remoteIpEndPoint = socket.RemoteEndPoint as IPEndPoint;
+                var ipAddress = remoteIpEndPoint != null ? remoteIpEndPoint.Address.ToString() : "<IP could not be resolved>";
 
-        private void ReceiveCallback(IAsyncResult asyncResult)
-        {
-            // Get the message state and buffer
-            var messageState = (MessageState)asyncResult.AsyncState;
-            int bytesRead = 0;
+                HandleCommunicationError(socket, new Exception(string.Format("Receive from {0} failed", ipAddress)));
+            }
+
+            // Get the message state
+            int bytesRead = socketAsyncEventArgs.BytesTransferred;
 
             // Read the data
-            try
-            {
-                bytesRead = messageState.Handler.EndReceive(asyncResult);
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(messageState.Handler, ex);
-                return;
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-                return;
-            }
-
             if (bytesRead > 0)
             {
-                // Add buffer to queue
-                messageState.ReceiveBufferQueue.Enqueue(new KeyValuePair<byte[], int>(messageState.Buffer, bytesRead));
-
-                // Post receive on the handler socket
-                messageState.Buffer = _bufferPool.Pop();
+                // Add to receive queue
+                BlockingQueue<SocketAsyncEventArgs> receiveBufferQueue = null;
+                _currentlyConnectedClientsReceiveQueuesLock.EnterReadLock();
                 try
                 {
-                    messageState.Handler.BeginReceive(messageState.Buffer, 0, messageState.Buffer.Length, 0, ReceiveCallback, messageState);
+                    if (!_currentlyConnectedClientsReceiveQueues.TryGetValue(socket, out receiveBufferQueue))
+                    {
+                        // Peace out!
+                        return;
+                    }
+                }
+                finally
+                {
+                    _currentlyConnectedClientsReceiveQueuesLock.ExitReadLock();
+                }
+
+                receiveBufferQueue.Enqueue(socketAsyncEventArgs);
+
+                socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+
+                // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
+                try
+                {
+                    if (!socket.ReceiveAsync(socketAsyncEventArgs))
+                    {
+                        OperationCallback(socket, socketAsyncEventArgs);
+                    }
                 }
                 catch (SocketException ex)
                 {
-                    HandleCommunicationError(messageState.Handler, ex);
+                    HandleCommunicationError(socketAsyncEventArgs.ConnectSocket, ex);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -505,11 +582,30 @@ namespace SimplSockets
             }
         }
 
-        private void ProcessReceivedMessage(MessageState messageState)
+        private void ProcessReceivedMessage(Socket handler)
         {
+            int bytesToRead = -1;
+            int threadId = -1;
+
             int availableTest = 0;
             int controlBytesOffset = 0;
             byte[] protocolBuffer = new byte[_controlBytesPlaceholder.Length];
+            byte[] resultBuffer = null;
+
+            BlockingQueue<SocketAsyncEventArgs> receiveBufferQueue = null;
+            _currentlyConnectedClientsReceiveQueuesLock.EnterReadLock();
+            try
+            {
+                if (!_currentlyConnectedClientsReceiveQueues.TryGetValue(handler, out receiveBufferQueue))
+                {
+                    // Peace out!
+                    return;
+                }
+            }
+            finally
+            {
+                _currentlyConnectedClientsReceiveQueuesLock.ExitReadLock();
+            }
 
             // Loop until socket is done
             while (_isListening)
@@ -517,26 +613,25 @@ namespace SimplSockets
                 // If the socket is disposed, we're done
                 try
                 {
-                    availableTest = messageState.Handler.Available;
+                    availableTest = handler.Available;
                 }
                 catch (ObjectDisposedException)
                 {
                     // Peace out!
-                    _messageStatePool.Push(messageState);
                     return;
                 }
 
                 // Get the next buffer from the queue
-                var receiveBufferEntry = messageState.ReceiveBufferQueue.Dequeue();
-                var buffer = receiveBufferEntry.Key;
-                int bytesRead = receiveBufferEntry.Value;
+                var socketAsyncEventArgs = receiveBufferQueue.Dequeue();
+                var buffer = socketAsyncEventArgs.Buffer;
+                int bytesRead = socketAsyncEventArgs.BytesTransferred;
 
                 int currentOffset = 0;
 
                 while (currentOffset < bytesRead)
                 {
                     // Check if we need to get our control byte values
-                    if (messageState.BytesToRead == -1)
+                    if (bytesToRead == -1)
                     {
                         var controlBytesNeeded = _controlBytesPlaceholder.Length - controlBytesOffset;
                         var controlBytesAvailable = bytesRead - currentOffset;
@@ -553,15 +648,15 @@ namespace SimplSockets
                         if (controlBytesOffset == _controlBytesPlaceholder.Length)
                         {
                             // Parse out control bytes
-                            ExtractControlBytes(protocolBuffer, out messageState.BytesToRead, out messageState.ThreadId);
+                            ExtractControlBytes(protocolBuffer, out bytesToRead, out threadId);
 
                             // Reset control bytes offset
                             controlBytesOffset = 0;
 
                             // Ensure message is not larger than maximum message size
-                            if (messageState.BytesToRead > _maxMessageSize)
+                            if (bytesToRead > _maxMessageSize)
                             {
-                                HandleCommunicationError(messageState.Handler, new InvalidOperationException(string.Format("message of length {0} exceeds maximum message length of {1}", messageState.BytesToRead, _maxMessageSize)));
+                                HandleCommunicationError(handler, new InvalidOperationException(string.Format("message of length {0} exceeds maximum message length of {1}", bytesToRead, _maxMessageSize)));
                                 return;
                             }
                         }
@@ -573,43 +668,43 @@ namespace SimplSockets
                     // Have control bytes, get message bytes
 
                     // SPECIAL CASE: if empty message, skip a bunch of stuff
-                    if (messageState.BytesToRead != 0)
+                    if (bytesToRead != 0)
                     {
                         // Initialize buffer if needed
-                        if (messageState.Buffer == null)
+                        if (resultBuffer == null)
                         {
-                            messageState.Buffer = new byte[messageState.BytesToRead];
+                            resultBuffer = new byte[bytesToRead];
                         }
 
                         var bytesAvailable = bytesRead - currentOffset;
 
-                        var bytesToCopy = Math.Min(messageState.BytesToRead, bytesAvailable);
+                        var bytesToCopy = Math.Min(bytesToRead, bytesAvailable);
 
                         // Copy bytes to buffer
-                        Buffer.BlockCopy(buffer, currentOffset, messageState.Buffer, messageState.Buffer.Length - messageState.BytesToRead, bytesToCopy);
+                        Buffer.BlockCopy(buffer, currentOffset, resultBuffer, resultBuffer.Length - bytesToRead, bytesToCopy);
 
                         currentOffset += bytesToCopy;
-                        messageState.BytesToRead -= bytesToCopy;
+                        bytesToRead -= bytesToCopy;
                     }
 
                     // Check if we're done
-                    if (messageState.BytesToRead == 0)
+                    if (bytesToRead == 0)
                     {
-                        if (messageState.Buffer != null)
+                        if (resultBuffer != null)
                         {
                             // Done, add to complete received messages
-                            CompleteMessage(messageState.Handler, messageState.ThreadId, messageState.Buffer);
+                            CompleteMessage(handler, threadId, resultBuffer);
                         }
 
                         // Reset message state
-                        messageState.Buffer = null;
-                        messageState.BytesToRead = -1;
-                        messageState.ThreadId = -1;
+                        resultBuffer = null;
+                        bytesToRead = -1;
+                        threadId = -1;
                     }
                 }
 
                 // Push the buffer back onto the pool
-                _bufferPool.Push(buffer);
+                _socketAsyncEventArgsPool.Push(socketAsyncEventArgs);
             }
         }
 
@@ -635,15 +730,6 @@ namespace SimplSockets
 
             // Place received message back in pool
             _receivedMessagePool.Push(receivedMessage);
-        }
-
-        /// <summary>
-        /// Handles a timeout in socket communication.
-        /// </summary>
-        /// <param name="socket">The socket that has timed out.</param>
-        private void HandleCommunicationTimeout(Socket socket)
-        {
-            HandleCommunicationError(socket, new TimeoutException(string.Format("The timeout ({0}ms) expired prior to the socket operation completing", _communicationTimeout)));
         }
 
         /// <summary>
@@ -675,6 +761,17 @@ namespace SimplSockets
                 socket.Close();
             }
 
+            // Remove receive buffer queue
+            _currentlyConnectedClientsReceiveQueuesLock.EnterWriteLock();
+            try
+            {
+                _currentlyConnectedClientsReceiveQueues.Remove(socket);
+            }
+            finally
+            {
+                _currentlyConnectedClientsReceiveQueuesLock.ExitWriteLock();
+            }
+
             // Try to unenroll from currently connected client sockets
             _currentlyConnectedClientsLock.EnterWriteLock();
             var shouldRelease = false;
@@ -702,15 +799,6 @@ namespace SimplSockets
                 error(this, socketErrorArgs);
                 _socketErrorArgsPool.Push(socketErrorArgs);
             }
-        }
-
-        private class MessageState
-        {
-            public byte[] Buffer = null;
-            public BlockingQueue<KeyValuePair<byte[], int>> ReceiveBufferQueue = null;
-            public Socket Handler = null;
-            public int ThreadId = -1;
-            public int BytesToRead = -1;
         }
 
         private static void SetControlBytes(byte[] buffer, int length, int threadId)
