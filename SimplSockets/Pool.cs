@@ -47,6 +47,9 @@ namespace SimplSockets
             // Limit queue size
             if (_queue.Count > _initialPoolCount)
             {
+                // Dispose if applicable
+                var disposable = item as IDisposable;
+                if (disposable != null) disposable.Dispose();
                 return;
             }
 
@@ -68,23 +71,19 @@ namespace SimplSockets
         /// <returns>An item.</returns>
         public T Pop()
         {
-            T result = null;
-
-            lock (_queue)
+            if (_queue.Count > 0)
             {
-                // Double lock check
-                if (_queue.Count > 0)
+                lock (_queue)
                 {
-                    return _queue.Dequeue();
+                    // Double lock check
+                    if (_queue.Count > 0)
+                    {
+                        return _queue.Dequeue();
+                    }
                 }
             }
 
-            result = _newItemMethod();
-            if (_resetItemMethod != null)
-            {
-                _resetItemMethod(result);
-            }
-            return result;
+            return _newItemMethod();
         }
     }
 }

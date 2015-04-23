@@ -53,7 +53,10 @@ namespace SimplSockets
         /// <returns>An item.</returns>
         public T Dequeue()
         {
-            _semaphore.WaitOne();
+            if (!_semaphore.WaitOne(1000))
+            {
+                return default(T);
+            }
 
             lock (_queue)
             {

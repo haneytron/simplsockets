@@ -104,6 +104,13 @@ namespace SimplSockets
                 poolItem.SetBuffer(new byte[messageBufferSize], 0, messageBufferSize);
                 poolItem.Completed += OperationCallback;
                 return poolItem;
+            }, (poolItem) =>
+            {
+                // Ensure enough room in buffer for accept, needs 2 * (sizeof(SOCKADDR_STORAGE + 16) bytes per https://msdn.microsoft.com/en-us/library/system.net.sockets.socket.acceptasync(v=vs.110).aspx
+                if (poolItem.Buffer.Length != messageBufferSize || poolItem.Count != poolItem.Buffer.Length)
+                {
+                    poolItem.SetBuffer(new byte[messageBufferSize], 0, messageBufferSize);
+                }
             });
             _receivedMessagePool = new Pool<ReceivedMessage>(PREDICTED_THREAD_COUNT, () => new ReceivedMessage(), receivedMessage =>
             {
@@ -151,30 +158,12 @@ namespace SimplSockets
                     HandleCommunicationError(_socket, ex);
                     return false;
                 }
-                catch (ObjectDisposedException)
-                {
-                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-                    return false;
-                }
 
                 var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
 
                 // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
-                try
+                if (!TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Receive, socketAsyncEventArgs))
                 {
-                    if (!_socket.ReceiveAsync(socketAsyncEventArgs))
-                    {
-                        OperationCallback(_socket, socketAsyncEventArgs);
-                    }
-                }
-                catch (SocketException ex)
-                {
-                    HandleCommunicationError(_socket, ex);
-                    return false;
-                }
-                catch (ObjectDisposedException)
-                {
-                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                     return false;
                 }
 
@@ -208,34 +197,10 @@ namespace SimplSockets
             var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
 
             var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
-
-            // Copy message over
-            if (messageWithControlBytes.Length > socketAsyncEventArgs.Buffer.Length)
-            {
-                socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
-            }
-            else
-            {
-                Buffer.BlockCopy(messageWithControlBytes, 0, socketAsyncEventArgs.Buffer, 0, messageWithControlBytes.Length);
-                socketAsyncEventArgs.SetBuffer(0, messageWithControlBytes.Length);
-            }
+            socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
 
             // Do the send
-            try
-            {
-                if (!_socket.SendAsync(socketAsyncEventArgs))
-                {
-                    OperationCallback(_socket, socketAsyncEventArgs);
-                }
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(_socket, ex);
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-            }
+            TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Send, socketAsyncEventArgs);
         }
 
         /// <summary>
@@ -260,34 +225,11 @@ namespace SimplSockets
             var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
 
             var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
-
-            // Copy message over
-            if (messageWithControlBytes.Length > socketAsyncEventArgs.Buffer.Length)
-            {
-                socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
-            }
-            else
-            {
-                Buffer.BlockCopy(messageWithControlBytes, 0, socketAsyncEventArgs.Buffer, 0, messageWithControlBytes.Length);
-                socketAsyncEventArgs.SetBuffer(0, messageWithControlBytes.Length);
-            }
+            socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
 
             // Do the send
-            try
+            if (!TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
             {
-                if (!_socket.SendAsync(socketAsyncEventArgs))
-                {
-                    OperationCallback(_socket, socketAsyncEventArgs);
-                }
-            }
-            catch (SocketException ex)
-            {
-                HandleCommunicationError(_socket, ex);
-                return null;
-            }
-            catch (ObjectDisposedException)
-            {
-                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                 return null;
             }
 
@@ -430,26 +372,16 @@ namespace SimplSockets
             {
                 // Add to receive queue
                 _receiveBufferQueue.Enqueue(socketAsyncEventArgs);
-
-                socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
-
-                // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
-                try
-                {
-                    if (!_socket.ReceiveAsync(socketAsyncEventArgs))
-                    {
-                        OperationCallback(_socket, socketAsyncEventArgs);
-                    }
-                }
-                catch (SocketException ex)
-                {
-                    HandleCommunicationError(_socket, ex);
-                }
-                catch (ObjectDisposedException)
-                {
-                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-                }
             }
+            else
+            {
+                _socketAsyncEventArgsPool.Push(socketAsyncEventArgs);
+            }
+
+            socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+
+            // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
+            TryUnsafeSocketOperation(socket, SocketAsyncOperation.Receive, socketAsyncEventArgs);
         }
 
         private void ProcessReceivedMessage(Socket handler)
@@ -466,6 +398,11 @@ namespace SimplSockets
             {
                 // Get the next buffer from the queue
                 var socketAsyncEventArgs = _receiveBufferQueue.Dequeue();
+                if (socketAsyncEventArgs == null)
+                {
+                    continue;
+                }
+
                 var buffer = socketAsyncEventArgs.Buffer;
                 int bytesRead = socketAsyncEventArgs.BytesTransferred;
 
@@ -537,10 +474,11 @@ namespace SimplSockets
                         {
                             // Done, add to complete received messages
                             CompleteMessage(handler, threadId, resultBuffer);
-                        }
 
-                        // Reset message state
-                        resultBuffer = null;
+                            // Reset message state
+                            resultBuffer = null;
+                        }
+                        
                         bytesToRead = -1;
                         threadId = -1;
                     }
@@ -718,6 +656,45 @@ namespace SimplSockets
             }
 
             multiplexerData.ManualResetEvent.Set();
+        }
+
+        private bool TryUnsafeSocketOperation(Socket socket, SocketAsyncOperation operation, SocketAsyncEventArgs socketAsyncEventArgs)
+        {
+            try
+            {
+                bool result = false;
+                switch (operation)
+                {
+                    case SocketAsyncOperation.Accept:
+                        result = socket.AcceptAsync(socketAsyncEventArgs);
+                        break;
+                    case SocketAsyncOperation.Send:
+                        result = socket.SendAsync(socketAsyncEventArgs);
+                        break;
+                    case SocketAsyncOperation.Receive:
+                        result = socket.ReceiveAsync(socketAsyncEventArgs);
+                        break;
+                    default:
+                        throw new InvalidOperationException("Unknown case called, should program something for this");
+                }
+
+                if (!result)
+                {
+                    OperationCallback(socket, socketAsyncEventArgs);
+                }
+            }
+            catch (SocketException ex)
+            {
+                HandleCommunicationError(socket, ex);
+                return false;
+            }
+            catch (ObjectDisposedException)
+            {
+                // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
+                return false;
+            }
+
+            return true;
         }
     }
 }
