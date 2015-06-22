@@ -37,7 +37,7 @@ namespace SimplSockets
         private readonly object _isListeningLock = new object();
 
         // The currently connected clients
-        private readonly List<Socket> _currentlyConnectedClients = null;
+        private readonly List<ConnectedClient> _currentlyConnectedClients = null;
         private readonly ReaderWriterLockSlim _currentlyConnectedClientsLock = new ReaderWriterLockSlim();
 
         // The currently connected client receive queues
@@ -94,7 +94,7 @@ namespace SimplSockets
             _maxMessageSize = maxMessageSize;
             _useNagleAlgorithm = useNagleAlgorithm;
 
-            _currentlyConnectedClients = new List<Socket>(maximumConnections);
+            _currentlyConnectedClients = new List<ConnectedClient>(maximumConnections);
             _currentlyConnectedClientsReceiveQueues = new Dictionary<Socket, BlockingQueue<SocketAsyncEventArgs>>(maximumConnections);
 
             // Create the pools
@@ -153,6 +153,9 @@ namespace SimplSockets
 
             // Post accept on the listening socket
             TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Accept, socketAsyncEventArgs);
+
+            // Spin up the keep-alive
+            Task.Factory.StartNew(KeepAlive);
         }
 
         /// <summary>
@@ -184,7 +187,7 @@ namespace SimplSockets
                     socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
 
                     // Post send on the listening socket
-                    if (!TryUnsafeSocketOperation(client, SocketAsyncOperation.Send, socketAsyncEventArgs))
+                    if (!TryUnsafeSocketOperation(client.Socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
                     {
                         // Mark for disconnection
                         if (bustedClients == null)
@@ -192,7 +195,7 @@ namespace SimplSockets
                             bustedClients = new List<Socket>();
                         }
 
-                        bustedClients.Add(client);
+                        bustedClients.Add(client.Socket);
                     }
                 }
             }
@@ -305,29 +308,64 @@ namespace SimplSockets
             return messageWithControlBytes;
         }
 
-        private void KeepAlive(Socket socket)
+        private void KeepAlive()
         {
-            socket.SendTimeout = _communicationTimeout;
+            List<Socket> bustedClients = null;
 
             while (true)
             {
-                // Do the keep-alive
-                try
+                Thread.Sleep(1000);
+
+                if (_currentlyConnectedClients.Count == 0)
                 {
-                    socket.Send(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0);
-                }
-                catch (SocketException)
-                {
-                    HandleCommunicationError(socket, new Exception("Keep Alive failed"));
-                    break;
-                }
-                catch (ObjectDisposedException)
-                {
-                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
-                    break;
+                    continue;
                 }
 
-                Thread.Sleep(1000);
+                bustedClients = null;
+
+                // Do the keep-alive
+                _currentlyConnectedClientsLock.EnterReadLock();
+                try
+                {
+                    foreach (var client in _currentlyConnectedClients)
+                    {
+                        var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+                        socketAsyncEventArgs.SetBuffer(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length);
+
+                        // Post send on the socket
+                        if (!TryUnsafeSocketOperation(client.Socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
+                        {
+                            // Mark for disconnection
+                            if (bustedClients == null)
+                            {
+                                bustedClients = new List<Socket>();
+                            }
+
+                            bustedClients.Add(client.Socket);
+                        }
+                        else
+                        {
+                            // Confirm that we've heard from the client recently
+                            if ((DateTime.UtcNow - client.LastResponse).TotalMilliseconds > _communicationTimeout)
+                            {
+                                HandleCommunicationError(client.Socket, new Exception("Keep alive timed out for client"));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    _currentlyConnectedClientsLock.ExitReadLock();
+                }
+
+                if (bustedClients != null)
+                {
+                    foreach (var client in bustedClients)
+                    {
+                        HandleCommunicationError(client, new Exception("Keep alive failed for a connected client"));
+                    }
+                }
             }
         }
 
@@ -357,6 +395,14 @@ namespace SimplSockets
                 HandleCommunicationError(socket, new Exception("Accept handshake failed"));
             }
 
+            var acceptSocketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+
+            // Post accept on the listening socket
+            if (!TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Accept, acceptSocketAsyncEventArgs))
+            {
+                return;
+            }
+
             var handler = socketAsyncEventArgs.AcceptSocket;
 
             try
@@ -377,14 +423,6 @@ namespace SimplSockets
                 return;
             }
 
-            var acceptSocketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
-
-            // Post accept on the listening socket
-            if (!TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Accept, acceptSocketAsyncEventArgs))
-            {
-                return;
-            }
-
             // If we are at max clients, disconnect
             if (!_maxConnectionsSemaphore.WaitOne(1000))
             {
@@ -393,10 +431,11 @@ namespace SimplSockets
             }
 
             // Enroll in currently connected client sockets
+            var connectedClient = new ConnectedClient(handler);
             _currentlyConnectedClientsLock.EnterWriteLock();
             try
             {
-                _currentlyConnectedClients.Add(handler);
+                _currentlyConnectedClients.Add(connectedClient);
             }
             finally
             {
@@ -427,10 +466,7 @@ namespace SimplSockets
                 return;
             }
 
-            // Spin up the keep-alive
-            Task.Factory.StartNew(() => KeepAlive(handler));
-
-            ProcessReceivedMessage(handler);
+            ProcessReceivedMessage(connectedClient);
         }
 
         private void SendCallback(Socket socket, SocketAsyncEventArgs socketAsyncEventArgs)
@@ -487,7 +523,7 @@ namespace SimplSockets
             TryUnsafeSocketOperation(socket, SocketAsyncOperation.Receive, socketAsyncEventArgs);
         }
 
-        private void ProcessReceivedMessage(Socket handler)
+        private void ProcessReceivedMessage(ConnectedClient connectedClient)
         {
             int bytesToRead = -1;
             int threadId = -1;
@@ -496,6 +532,8 @@ namespace SimplSockets
             int controlBytesOffset = 0;
             byte[] protocolBuffer = new byte[_controlBytesPlaceholder.Length];
             byte[] resultBuffer = null;
+
+            var handler = connectedClient.Socket;
 
             BlockingQueue<SocketAsyncEventArgs> receiveBufferQueue = null;
             _currentlyConnectedClientsReceiveQueuesLock.EnterReadLock();
@@ -611,6 +649,8 @@ namespace SimplSockets
 
                         bytesToRead = -1;
                         threadId = -1;
+
+                        connectedClient.LastResponse = DateTime.UtcNow;
                     }
                 }
 
@@ -688,7 +728,16 @@ namespace SimplSockets
             var shouldRelease = false;
             try
             {
-                shouldRelease = _currentlyConnectedClients.Remove(socket);
+                for (var i = 0; i < _currentlyConnectedClients.Count; i++)
+                {
+                    var connectedClient = _currentlyConnectedClients[i];
+                    if (connectedClient.Socket == socket)
+                    {
+                        shouldRelease = true;
+                        _currentlyConnectedClients.RemoveAt(i);
+                        break;
+                    }
+                }
             }
             finally
             {
@@ -769,6 +818,21 @@ namespace SimplSockets
             }
 
             return true;
+        }
+
+        private class ConnectedClient
+        {
+            public ConnectedClient(Socket socket)
+            {
+                if (socket == null) throw new ArgumentNullException("socket");
+
+                Socket = socket;
+                LastResponse = DateTime.UtcNow;
+            }
+
+            public Socket Socket { get; private set; }
+
+            public DateTime LastResponse { get; set; }
         }
     }
 }

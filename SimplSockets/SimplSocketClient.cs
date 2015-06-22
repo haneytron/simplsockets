@@ -47,6 +47,9 @@ namespace SimplSockets
         private readonly Pool<MessageReceivedArgs> _messageReceivedArgsPool = null;
         private readonly Pool<SocketErrorArgs> _socketErrorArgsPool = null;
 
+        // The date time of the last response
+        private DateTime _lastResponse = DateTime.UtcNow;
+
         // The control bytes placeholder - the first 4 bytes are little endian message length, the last 4 are thread id
         private static readonly byte[] _controlBytesPlaceholder = new byte[] { 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -306,27 +309,28 @@ namespace SimplSockets
 
         private void KeepAlive(Socket socket)
         {
-            socket.SendTimeout = _communicationTimeout;
+            _lastResponse = DateTime.UtcNow;
 
-            while (true)
+            while (_isConnected)
             {
+                Thread.Sleep(1000);
+
                 // Do the keep-alive
-                try
+                var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+                socketAsyncEventArgs.SetBuffer(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length);
+
+                // Post send on the socket
+                if (!TryUnsafeSocketOperation(socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
                 {
-                    socket.Send(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length, 0);
-                }
-                catch (SocketException)
-                {
-                    HandleCommunicationError(socket, new Exception("Keep Alive failed"));
-                    break;
-                }
-                catch (ObjectDisposedException)
-                {
-                    // If disposed, handle communication error was already done and we're just catching up on other threads. suppress it.
                     break;
                 }
 
-                Thread.Sleep(1000);
+                // Confirm that we've heard from the server recently
+                if ((DateTime.UtcNow - _lastResponse).TotalMilliseconds > _communicationTimeout)
+                {
+                    HandleCommunicationError(socket, new Exception("Keep alive timed out"));
+                    break;
+                }
             }
         }
 
@@ -481,6 +485,8 @@ namespace SimplSockets
                         
                         bytesToRead = -1;
                         threadId = -1;
+
+                        _lastResponse = DateTime.UtcNow;
                     }
                 }
 
