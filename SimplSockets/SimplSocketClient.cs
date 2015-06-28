@@ -42,7 +42,9 @@ namespace SimplSockets
 
         // Various pools
         private readonly Pool<MultiplexerData> _multiplexerDataPool = null;
-        private readonly Pool<SocketAsyncEventArgs> _socketAsyncEventArgsPool = null;
+        private readonly Pool<SocketAsyncEventArgs> _socketAsyncEventArgsSendPool = null;
+        private readonly Pool<SocketAsyncEventArgs> _socketAsyncEventArgsReceivePool = null;
+        private readonly Pool<SocketAsyncEventArgs> _socketAsyncEventArgsKeepAlivePool = null;
         private readonly Pool<ReceivedMessage> _receivedMessagePool = null;
         private readonly Pool<MessageReceivedArgs> _messageReceivedArgsPool = null;
         private readonly Pool<SocketErrorArgs> _socketErrorArgsPool = null;
@@ -101,19 +103,25 @@ namespace SimplSockets
                 multiplexerData.Message = null;
                 multiplexerData.ManualResetEvent.Reset();
             });
-            _socketAsyncEventArgsPool = new Pool<SocketAsyncEventArgs>(PREDICTED_THREAD_COUNT, () =>
+            _socketAsyncEventArgsSendPool = new Pool<SocketAsyncEventArgs>(PREDICTED_THREAD_COUNT, () =>
+            {
+                var poolItem = new SocketAsyncEventArgs();
+                poolItem.Completed += OperationCallback;
+                return poolItem;
+            });
+            _socketAsyncEventArgsReceivePool = new Pool<SocketAsyncEventArgs>(PREDICTED_THREAD_COUNT, () =>
             {
                 var poolItem = new SocketAsyncEventArgs();
                 poolItem.SetBuffer(new byte[messageBufferSize], 0, messageBufferSize);
                 poolItem.Completed += OperationCallback;
                 return poolItem;
-            }, (poolItem) =>
+            });
+            _socketAsyncEventArgsKeepAlivePool = new Pool<SocketAsyncEventArgs>(PREDICTED_THREAD_COUNT, () =>
             {
-                // Ensure enough room in buffer for accept, needs 2 * (sizeof(SOCKADDR_STORAGE + 16) bytes per https://msdn.microsoft.com/en-us/library/system.net.sockets.socket.acceptasync(v=vs.110).aspx
-                if (poolItem.Buffer.Length != messageBufferSize || poolItem.Count != poolItem.Buffer.Length)
-                {
-                    poolItem.SetBuffer(new byte[messageBufferSize], 0, messageBufferSize);
-                }
+                var poolItem = new SocketAsyncEventArgs();
+                poolItem.SetBuffer(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length);
+                poolItem.Completed += OperationCallback;
+                return poolItem;
             });
             _receivedMessagePool = new Pool<ReceivedMessage>(PREDICTED_THREAD_COUNT, () => new ReceivedMessage(), receivedMessage =>
             {
@@ -162,14 +170,12 @@ namespace SimplSockets
                     return false;
                 }
 
-                var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
-
                 // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
-                if (!TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Receive, socketAsyncEventArgs))
+                if (!TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Receive, _socketAsyncEventArgsReceivePool.Pop()))
                 {
                     return false;
                 }
-
+                
                 // Spin up the keep-alive
                 Task.Factory.StartNew(() => KeepAlive(_socket));
 
@@ -199,7 +205,7 @@ namespace SimplSockets
 
             var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
 
-            var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+            var socketAsyncEventArgs = _socketAsyncEventArgsSendPool.Pop();
             socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
 
             // Do the send
@@ -227,7 +233,7 @@ namespace SimplSockets
 
             var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
 
-            var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+            var socketAsyncEventArgs = _socketAsyncEventArgsSendPool.Pop();
             socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
 
             // Do the send
@@ -316,8 +322,7 @@ namespace SimplSockets
                 Thread.Sleep(1000);
 
                 // Do the keep-alive
-                var socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
-                socketAsyncEventArgs.SetBuffer(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length);
+                var socketAsyncEventArgs = _socketAsyncEventArgsKeepAlivePool.Pop();
 
                 // Post send on the socket
                 if (!TryUnsafeSocketOperation(socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
@@ -354,10 +359,16 @@ namespace SimplSockets
             // Check for error
             if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                HandleCommunicationError(socket, new Exception("Send failed"));
+                HandleCommunicationError(socket, new Exception("Send failed, error = " + socketAsyncEventArgs.SocketError));
             }
 
-            _socketAsyncEventArgsPool.Push(socketAsyncEventArgs);
+            if (socketAsyncEventArgs.Buffer.Length == _controlBytesPlaceholder.Length)
+            {
+                _socketAsyncEventArgsKeepAlivePool.Push(socketAsyncEventArgs);
+                return;
+            }
+
+            _socketAsyncEventArgsSendPool.Push(socketAsyncEventArgs);
         }
 
         private void ReceiveCallback(Socket socket, SocketAsyncEventArgs socketAsyncEventArgs)
@@ -365,7 +376,7 @@ namespace SimplSockets
             // Check for error
             if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                HandleCommunicationError(socket, new Exception("Receive failed"));
+                HandleCommunicationError(socket, new Exception("Receive failed, error = " + socketAsyncEventArgs.SocketError));
             }
 
             // Get the message state
@@ -379,10 +390,14 @@ namespace SimplSockets
             }
             else
             {
-                _socketAsyncEventArgsPool.Push(socketAsyncEventArgs);
+                // 0 bytes means disconnect
+                HandleCommunicationError(socket, new Exception("Received 0 bytes (graceful disconnect)"));
+
+                _socketAsyncEventArgsReceivePool.Push(socketAsyncEventArgs);
+                return;
             }
 
-            socketAsyncEventArgs = _socketAsyncEventArgsPool.Pop();
+            socketAsyncEventArgs = _socketAsyncEventArgsReceivePool.Pop();
 
             // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
             TryUnsafeSocketOperation(socket, SocketAsyncOperation.Receive, socketAsyncEventArgs);
@@ -490,7 +505,7 @@ namespace SimplSockets
                     }
                 }
 
-                _socketAsyncEventArgsPool.Push(socketAsyncEventArgs);
+                _socketAsyncEventArgsReceivePool.Push(socketAsyncEventArgs);
             }
         }
 
