@@ -273,6 +273,23 @@ namespace SimplSockets
 
             _socket.Close();
 
+            // Dump all clients
+            var clientList = new List<ConnectedClient>();
+            _currentlyConnectedClientsLock.EnterWriteLock();
+            try
+            {
+                clientList = new List<ConnectedClient>(_currentlyConnectedClients);
+            }
+            finally
+            {
+                _currentlyConnectedClientsLock.ExitWriteLock();
+            }
+
+            foreach (var client in clientList)
+            {
+                HandleCommunicationError(client.Socket, new Exception("Host is shutting down"));
+            }
+
             // No longer connected
             lock (_isListeningLock)
             {
@@ -348,8 +365,9 @@ namespace SimplSockets
                     {
                         var socketAsyncEventArgs = _socketAsyncEventArgsKeepAlivePool.Pop();
 
-                        // Post send on the socket
-                        if (!TryUnsafeSocketOperation(client.Socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
+                        // Post send on the socket and confirm that we've heard from the client recently
+                        if ((DateTime.UtcNow - client.LastResponse).TotalMilliseconds > _communicationTimeout
+                            || !TryUnsafeSocketOperation(client.Socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
                         {
                             // Mark for disconnection
                             if (bustedClients == null)
@@ -358,15 +376,6 @@ namespace SimplSockets
                             }
 
                             bustedClients.Add(client.Socket);
-                        }
-                        else
-                        {
-                            // Confirm that we've heard from the client recently
-                            if ((DateTime.UtcNow - client.LastResponse).TotalMilliseconds > _communicationTimeout)
-                            {
-                                HandleCommunicationError(client.Socket, new Exception("Keep alive timed out for client"));
-                                continue;
-                            }
                         }
                     }
                 }
@@ -405,8 +414,12 @@ namespace SimplSockets
 
         private void AcceptCallback(Socket socket, SocketAsyncEventArgs socketAsyncEventArgs)
         {
-            // Check for error
-            if (socketAsyncEventArgs.SocketError != SocketError.Success)
+            // If our socket is disposed, stop
+            if (socketAsyncEventArgs.SocketError == SocketError.OperationAborted)
+            {
+                return;
+            }
+            else if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
                 HandleCommunicationError(socket, new Exception("Accept failed, error = " + socketAsyncEventArgs.SocketError));
             }
