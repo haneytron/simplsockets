@@ -5,7 +5,7 @@ using System.Threading;
 namespace SimplSockets
 {
     /// <summary>
-    /// A queue that wraps a regular generic queue but when empty will block Dequeue threads until an item is available.
+    /// A queue that wraps a regular generic queue but when empty will block Dequeue threads until an item is available or 1000 ms passes.
     /// This class is thread safe.
     /// </summary>
     /// <typeparam name="T">The type of the object contained in the queue.</typeparam>
@@ -42,24 +42,23 @@ namespace SimplSockets
             lock (_queue)
             {
                 _queue.Enqueue(item);
+                _semaphore.Release();
             }
-
-            _semaphore.Release();
         }
 
         /// <summary>
-        /// Dequeues an item. Will block if the queue is empty until an item becomes available.
+        /// Dequeues an item. Will block if the queue is empty until an item becomes available or 1000 ms passes.
         /// </summary>
         /// <returns>An item.</returns>
         public T Dequeue()
         {
-            if (!_semaphore.WaitOne(1000))
-            {
-                return default(T);
-            }
-
             lock (_queue)
             {
+                if (!_semaphore.WaitOne(1000))
+                {
+                    return default(T);
+                }
+
                 return _queue.Dequeue();
             }
         }

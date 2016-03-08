@@ -247,18 +247,18 @@ namespace SimplSockets
             {
                 HandleCommunicationError(_socket, new TimeoutException("The connection timed out before the response message was received"));
 
-                // Reset the multiplexer
-                multiplexerData.ManualResetEvent.Reset();
+                // Back in the pool - resets the ManualResetEvent
+                _multiplexerDataPool.Push(multiplexerData);
 
                 // No signal
                 return null;
             }
 
-            // Reset the multiplexer
-            multiplexerData.ManualResetEvent.Reset();
-
             // Now get the command string
             var result = multiplexerData.Message;
+
+            // Back in the pool - resets the ManualResetEvent
+            _multiplexerDataPool.Push(multiplexerData);
 
             return result;
         }
@@ -327,14 +327,13 @@ namespace SimplSockets
                 // Post send on the socket
                 if (!TryUnsafeSocketOperation(socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
                 {
-                    break;
+                    continue;
                 }
 
                 // Confirm that we've heard from the server recently
                 if ((DateTime.UtcNow - _lastResponse).TotalMilliseconds > _communicationTimeout)
                 {
                     HandleCommunicationError(socket, new Exception("Keep alive timed out"));
-                    break;
                 }
             }
         }

@@ -23,10 +23,6 @@ namespace SimplSockets
         private readonly int _communicationTimeout = 0;
         // The maximum message size
         private readonly int _maxMessageSize = 0;
-        // The maximum connections to allow to use the socket simultaneously
-        private readonly int _maximumConnections = 0;
-        // The semaphore that enforces the maximum numbers of simultaneous connections
-        private readonly Semaphore _maxConnectionsSemaphore = null;
         // Whether or not to use the Nagle algorithm
         private readonly bool _useNagleAlgorithm = false;
         // The linger option
@@ -55,6 +51,9 @@ namespace SimplSockets
         // The control bytes placeholder - the first 4 bytes are little endian message length, the last 4 are thread id
         private static readonly byte[] _controlBytesPlaceholder = new byte[] { 0, 0, 0, 0, 0, 0, 0, 0 };
 
+        // A completely blind guess at the number of expected connections to this server. 100 sounds good, right? Right.
+        private const int PREDICTED_CONNECTION_COUNT = 100;
+
         /// <summary>
         /// The constructor.
         /// </summary>
@@ -62,9 +61,8 @@ namespace SimplSockets
         /// <param name="messageBufferSize">The message buffer size to use for send/receive.</param>
         /// <param name="communicationTimeout">The communication timeout, in milliseconds.</param>
         /// <param name="maxMessageSize">The maximum message size.</param>
-        /// <param name="maximumConnections">The maximum number of connections to allow simultaneously.</param>
         /// <param name="useNagleAlgorithm">Whether or not to use the Nagle algorithm.</param>
-        public SimplSocketServer(Func<Socket> socketFunc, int messageBufferSize = 4096, int communicationTimeout = 10000, int maxMessageSize = 100 * 1024 * 1024, int maximumConnections = 50, bool useNagleAlgorithm = false)
+        public SimplSocketServer(Func<Socket> socketFunc, int messageBufferSize = 4096, int communicationTimeout = 10000, int maxMessageSize = 100 * 1024 * 1024, bool useNagleAlgorithm = false)
         {
             // Sanitize
             if (socketFunc == null)
@@ -83,50 +81,44 @@ namespace SimplSockets
             {
                 throw new ArgumentException("must be >= 1024", "maxMessageSize");
             }
-            if (maximumConnections <= 0)
-            {
-                throw new ArgumentException("must be > 0", "maximumConnections");
-            }
 
             _socketFunc = socketFunc;
             _messageBufferSize = messageBufferSize;
-            _maximumConnections = maximumConnections;
-            _maxConnectionsSemaphore = new Semaphore(maximumConnections, maximumConnections);
             _communicationTimeout = communicationTimeout;
             _maxMessageSize = maxMessageSize;
             _useNagleAlgorithm = useNagleAlgorithm;
 
-            _currentlyConnectedClients = new List<ConnectedClient>(maximumConnections);
-            _currentlyConnectedClientsReceiveQueues = new Dictionary<Socket, BlockingQueue<SocketAsyncEventArgs>>(maximumConnections);
+            _currentlyConnectedClients = new List<ConnectedClient>(PREDICTED_CONNECTION_COUNT);
+            _currentlyConnectedClientsReceiveQueues = new Dictionary<Socket, BlockingQueue<SocketAsyncEventArgs>>(PREDICTED_CONNECTION_COUNT);
 
             // Create the pools
-            _socketAsyncEventArgsSendPool = new Pool<SocketAsyncEventArgs>(maximumConnections, () =>
+            _socketAsyncEventArgsSendPool = new Pool<SocketAsyncEventArgs>(PREDICTED_CONNECTION_COUNT, () =>
             {
                 var poolItem = new SocketAsyncEventArgs();
                 poolItem.Completed += OperationCallback;
                 return poolItem;
             });
-            _socketAsyncEventArgsReceivePool = new Pool<SocketAsyncEventArgs>(maximumConnections, () =>
+            _socketAsyncEventArgsReceivePool = new Pool<SocketAsyncEventArgs>(PREDICTED_CONNECTION_COUNT, () =>
             {
                 var poolItem = new SocketAsyncEventArgs();
                 poolItem.SetBuffer(new byte[messageBufferSize], 0, messageBufferSize);
                 poolItem.Completed += OperationCallback;
                 return poolItem;
             });
-            _socketAsyncEventArgsKeepAlivePool = new Pool<SocketAsyncEventArgs>(maximumConnections, () =>
+            _socketAsyncEventArgsKeepAlivePool = new Pool<SocketAsyncEventArgs>(PREDICTED_CONNECTION_COUNT, () =>
             {
                 var poolItem = new SocketAsyncEventArgs();
                 poolItem.SetBuffer(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length);
                 poolItem.Completed += OperationCallback;
                 return poolItem;
             });
-            _receivedMessagePool = new Pool<ReceivedMessage>(maximumConnections, () => new ReceivedMessage(), receivedMessage =>
+            _receivedMessagePool = new Pool<ReceivedMessage>(PREDICTED_CONNECTION_COUNT, () => new ReceivedMessage(), receivedMessage =>
             {
                 receivedMessage.Message = null;
                 receivedMessage.Socket = null;
             });
-            _messageReceivedArgsPool = new Pool<MessageReceivedArgs>(maximumConnections, () => new MessageReceivedArgs(), messageReceivedArgs => { messageReceivedArgs.ReceivedMessage = null; });
-            _socketErrorArgsPool = new Pool<SocketErrorArgs>(maximumConnections, () => new SocketErrorArgs(), socketErrorArgs => { socketErrorArgs.Exception = null; });
+            _messageReceivedArgsPool = new Pool<MessageReceivedArgs>(PREDICTED_CONNECTION_COUNT, () => new MessageReceivedArgs(), messageReceivedArgs => { messageReceivedArgs.ReceivedMessage = null; });
+            _socketErrorArgsPool = new Pool<SocketErrorArgs>(PREDICTED_CONNECTION_COUNT, () => new SocketErrorArgs(), socketErrorArgs => { socketErrorArgs.Exception = null; });
         }
 
         /// <summary>
@@ -155,7 +147,7 @@ namespace SimplSockets
             _socket = _socketFunc();
 
             _socket.Bind(localEndpoint);
-            _socket.Listen(_maximumConnections);
+            _socket.Listen(PREDICTED_CONNECTION_COUNT);
 
             // very important to not have buffer for accept, see remarks on 288 byte threshold: https://msdn.microsoft.com/en-us/library/system.net.sockets.socket.acceptasync(v=vs.110).aspx
             var socketAsyncEventArgs = new SocketAsyncEventArgs();
@@ -451,13 +443,6 @@ namespace SimplSockets
                 return;
             }
 
-            // If we are at max clients, disconnect
-            if (!_maxConnectionsSemaphore.WaitOne(1000))
-            {
-                handler.Close();
-                return;
-            }
-
             // Enroll in currently connected client sockets
             var connectedClient = new ConnectedClient(handler);
             _currentlyConnectedClientsLock.EnterWriteLock();
@@ -482,7 +467,7 @@ namespace SimplSockets
             _currentlyConnectedClientsReceiveQueuesLock.EnterWriteLock();
             try
             {
-                _currentlyConnectedClientsReceiveQueues.Add(handler, new BlockingQueue<SocketAsyncEventArgs>(_maximumConnections * 10));
+                _currentlyConnectedClientsReceiveQueues.Add(handler, new BlockingQueue<SocketAsyncEventArgs>(PREDICTED_CONNECTION_COUNT));
             }
             finally
             {
@@ -763,7 +748,6 @@ namespace SimplSockets
 
             // Try to unenroll from currently connected client sockets
             _currentlyConnectedClientsLock.EnterWriteLock();
-            var shouldRelease = false;
             try
             {
                 for (var i = 0; i < _currentlyConnectedClients.Count; i++)
@@ -771,7 +755,6 @@ namespace SimplSockets
                     var connectedClient = _currentlyConnectedClients[i];
                     if (connectedClient.Socket == socket)
                     {
-                        shouldRelease = true;
                         _currentlyConnectedClients.RemoveAt(i);
                         break;
                     }
@@ -780,12 +763,6 @@ namespace SimplSockets
             finally
             {
                 _currentlyConnectedClientsLock.ExitWriteLock();
-            }
-
-            // Release one from the max connections semaphore if needed
-            if (shouldRelease)
-            {
-                _maxConnectionsSemaphore.Release();
             }
 
             // Raise the error event 
