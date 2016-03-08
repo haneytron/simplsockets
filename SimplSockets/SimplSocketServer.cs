@@ -62,7 +62,7 @@ namespace SimplSockets
         /// <param name="communicationTimeout">The communication timeout, in milliseconds.</param>
         /// <param name="maxMessageSize">The maximum message size.</param>
         /// <param name="useNagleAlgorithm">Whether or not to use the Nagle algorithm.</param>
-        public SimplSocketServer(Func<Socket> socketFunc, int messageBufferSize = 4096, int communicationTimeout = 10000, int maxMessageSize = 100 * 1024 * 1024, bool useNagleAlgorithm = false)
+        public SimplSocketServer(Func<Socket> socketFunc, int messageBufferSize = 65536, int communicationTimeout = 10000, int maxMessageSize = 10 * 1024 * 1024, bool useNagleAlgorithm = false)
         {
             // Sanitize
             if (socketFunc == null)
@@ -467,7 +467,7 @@ namespace SimplSockets
             _currentlyConnectedClientsReceiveQueuesLock.EnterWriteLock();
             try
             {
-                _currentlyConnectedClientsReceiveQueues.Add(handler, new BlockingQueue<SocketAsyncEventArgs>(PREDICTED_CONNECTION_COUNT));
+                _currentlyConnectedClientsReceiveQueues.Add(handler, new BlockingQueue<SocketAsyncEventArgs>());
             }
             finally
             {

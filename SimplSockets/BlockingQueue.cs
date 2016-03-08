@@ -12,7 +12,7 @@ namespace SimplSockets
     internal sealed class BlockingQueue<T>
     {
         // The underlying queue
-        Queue<T> _queue = null;
+        LinkedList<T> _queue = null;
         // The semaphore used for blocking
         Semaphore _semaphore = new Semaphore(0, Int32.MaxValue);
 
@@ -21,16 +21,7 @@ namespace SimplSockets
         /// </summary>
         public BlockingQueue()
         {
-            _queue = new Queue<T>();
-        }
-
-        /// <summary>
-        /// The constructor.
-        /// </summary>
-        /// <param name="capacity">Sets the initial queue capacity.</param>
-        public BlockingQueue(int capacity)
-        {
-            _queue = new Queue<T>(capacity);
+            _queue = new LinkedList<T>();
         }
 
         /// <summary>
@@ -41,7 +32,20 @@ namespace SimplSockets
         {
             lock (_queue)
             {
-                _queue.Enqueue(item);
+                _queue.AddLast(item);
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Enqueues an item to the front of the queue.
+        /// </summary>
+        /// <param name="item">An item.</param>
+        public void EnqueueFront(T item)
+        {
+            lock (_queue)
+            {
+                _queue.AddFirst(item);
                 _semaphore.Release();
             }
         }
@@ -52,14 +56,17 @@ namespace SimplSockets
         /// <returns>An item.</returns>
         public T Dequeue()
         {
+            if (!_semaphore.WaitOne(1000))
+            {
+                return default(T);
+            }
+
             lock (_queue)
             {
-                if (!_semaphore.WaitOne(1000))
-                {
-                    return default(T);
-                }
-
-                return _queue.Dequeue();
+                if (_queue.Count == 0) return default(T);
+                var firstNode = _queue.First;
+                _queue.RemoveFirst();
+                return firstNode.Value;
             }
         }
 

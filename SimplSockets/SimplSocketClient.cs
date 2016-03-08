@@ -29,8 +29,12 @@ namespace SimplSockets
         // The linger option
         private readonly LingerOption _lingerOption = new LingerOption(true, 0);
 
+        // The send buffer queue
+        private readonly BlockingQueue<SocketAsyncEventArgs> _sendBufferQueue = null;
         // The receive buffer queue
         private readonly BlockingQueue<SocketAsyncEventArgs> _receiveBufferQueue = null;
+        // The send buffer manual reset event
+        private readonly ManualResetEvent _sendBufferReset = new ManualResetEvent(false);
 
         // Whether or not a connection currently exists
         private volatile bool _isConnected = false;
@@ -66,7 +70,7 @@ namespace SimplSockets
         /// <param name="communicationTimeout">The communication timeout, in milliseconds.</param>
         /// <param name="maxMessageSize">The maximum message size.</param>
         /// <param name="useNagleAlgorithm">Whether or not to use the Nagle algorithm.</param>
-        public SimplSocketClient(Func<Socket> socketFunc, int messageBufferSize = 4096, int communicationTimeout = 10000, int maxMessageSize = 100 * 1024 * 1024, bool useNagleAlgorithm = false)
+        public SimplSocketClient(Func<Socket> socketFunc, int messageBufferSize = 65536, int communicationTimeout = 10000, int maxMessageSize = 10 * 1024 * 1024, bool useNagleAlgorithm = false)
         {
             // Sanitize
             if (socketFunc == null)
@@ -92,7 +96,8 @@ namespace SimplSockets
             _maxMessageSize = maxMessageSize;
             _useNagleAlgorithm = useNagleAlgorithm;
 
-            _receiveBufferQueue = new BlockingQueue<SocketAsyncEventArgs>(PREDICTED_THREAD_COUNT);
+            _sendBufferQueue = new BlockingQueue<SocketAsyncEventArgs>();
+            _receiveBufferQueue = new BlockingQueue<SocketAsyncEventArgs>();
 
             // Initialize the client multiplexer
             _clientMultiplexer = new Dictionary<int, MultiplexerData>(PREDICTED_THREAD_COUNT);
@@ -179,6 +184,9 @@ namespace SimplSockets
                 // Spin up the keep-alive
                 Task.Factory.StartNew(() => KeepAlive(_socket));
 
+                // Process all queued sends on a separate thread
+                Task.Factory.StartNew(() => ProcessSendQueue(_socket));
+
                 // Process all incoming messages on a separate thread
                 Task.Factory.StartNew(() => ProcessReceivedMessage(_socket));
 
@@ -204,12 +212,10 @@ namespace SimplSockets
             int threadId = Thread.CurrentThread.ManagedThreadId;
 
             var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
-
             var socketAsyncEventArgs = _socketAsyncEventArgsSendPool.Pop();
             socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
 
-            // Do the send
-            TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Send, socketAsyncEventArgs);
+            _sendBufferQueue.Enqueue(socketAsyncEventArgs);
         }
 
         /// <summary>
@@ -236,19 +242,16 @@ namespace SimplSockets
             var socketAsyncEventArgs = _socketAsyncEventArgsSendPool.Pop();
             socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
 
-            // Do the send
-            if (!TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
-            {
-                return null;
-            }
+            // Prioritize sends that have receives to the front of the queue
+            _sendBufferQueue.EnqueueFront(socketAsyncEventArgs);
 
             // Wait for our message to go ahead from the receive callback, or until the timeout is reached
             if (!multiplexerData.ManualResetEvent.WaitOne(_communicationTimeout))
             {
                 HandleCommunicationError(_socket, new TimeoutException("The connection timed out before the response message was received"));
 
-                // Back in the pool - resets the ManualResetEvent
-                _multiplexerDataPool.Push(multiplexerData);
+                // Unenroll from the multiplexer
+                UnenrollMultiplexer(threadId);
 
                 // No signal
                 return null;
@@ -257,8 +260,8 @@ namespace SimplSockets
             // Now get the command string
             var result = multiplexerData.Message;
 
-            // Back in the pool - resets the ManualResetEvent
-            _multiplexerDataPool.Push(multiplexerData);
+            // Unenroll from the multiplexer
+            UnenrollMultiplexer(threadId);
 
             return result;
         }
@@ -324,16 +327,13 @@ namespace SimplSockets
                 // Do the keep-alive
                 var socketAsyncEventArgs = _socketAsyncEventArgsKeepAlivePool.Pop();
 
-                // Post send on the socket
-                if (!TryUnsafeSocketOperation(socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
-                {
-                    continue;
-                }
+                _sendBufferQueue.Enqueue(socketAsyncEventArgs);
 
                 // Confirm that we've heard from the server recently
                 if ((DateTime.UtcNow - _lastResponse).TotalMilliseconds > _communicationTimeout)
                 {
                     HandleCommunicationError(socket, new Exception("Keep alive timed out"));
+                    return;
                 }
             }
         }
@@ -360,6 +360,8 @@ namespace SimplSockets
             {
                 HandleCommunicationError(socket, new Exception("Send failed, error = " + socketAsyncEventArgs.SocketError));
             }
+
+            _sendBufferReset.Set();
 
             if (socketAsyncEventArgs.Buffer.Length == _controlBytesPlaceholder.Length)
             {
@@ -400,6 +402,30 @@ namespace SimplSockets
 
             // Post a receive to the socket as the client will be continuously receiving messages to be pushed to the queue
             TryUnsafeSocketOperation(socket, SocketAsyncOperation.Receive, socketAsyncEventArgs);
+        }
+
+        private void ProcessSendQueue(Socket handler)
+        {
+            while (_isConnected)
+            {
+                // Get the next buffer from the queue
+                var socketAsyncEventArgs = _sendBufferQueue.Dequeue();
+                if (socketAsyncEventArgs == null)
+                {
+                    continue;
+                }
+
+                _sendBufferReset.Reset();
+
+                // Do the send
+                TryUnsafeSocketOperation(_socket, SocketAsyncOperation.Send, socketAsyncEventArgs);
+
+                if (!_sendBufferReset.WaitOne(_communicationTimeout))
+                {
+                    HandleCommunicationError(_socket, new TimeoutException("The connection timed out before the send acknowledgement was received"));
+                    return;
+                }
+            }
         }
 
         private void ProcessReceivedMessage(Socket handler)
@@ -610,22 +636,7 @@ namespace SimplSockets
 
         private MultiplexerData EnrollMultiplexer(int threadId)
         {
-            MultiplexerData multiplexerData = null;
-
-            _clientMultiplexerLock.EnterReadLock();
-            try
-            {
-                if (_clientMultiplexer.TryGetValue(threadId, out multiplexerData))
-                {
-                    return multiplexerData;
-                }
-            }
-            finally
-            {
-                _clientMultiplexerLock.ExitReadLock();
-            }
-
-            multiplexerData = _multiplexerDataPool.Pop();
+            var multiplexerData = _multiplexerDataPool.Pop();
 
             _clientMultiplexerLock.EnterWriteLock();
             try
@@ -638,6 +649,27 @@ namespace SimplSockets
             }
 
             return multiplexerData;
+        }
+
+        private void UnenrollMultiplexer(int threadId)
+        {
+            var multiplexerData = GetMultiplexerData(threadId);
+            if (multiplexerData == null)
+            {
+                return;
+            }
+
+            _clientMultiplexerLock.EnterWriteLock();
+            try
+            {
+                _clientMultiplexer.Remove(threadId);
+            }
+            finally
+            {
+                _clientMultiplexerLock.ExitWriteLock();
+            }
+
+            _multiplexerDataPool.Push(multiplexerData);
         }
 
         private MultiplexerData GetMultiplexerData(int threadId)
