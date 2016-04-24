@@ -39,7 +39,7 @@ namespace SimplSockets
         }
 
         /// <summary>
-        /// Pushes an item into the pool for later re-use.
+        /// Pushes an item into the pool for later re-use, and resets it state if a reset method was provided to the constructor.
         /// </summary>
         /// <param name="item">The item.</param>
         public void Push(T item)
@@ -65,8 +65,7 @@ namespace SimplSockets
         }
 
         /// <summary>
-        /// Pops an item out of the pool for use. The item will have its state reset if a 
-        /// reset method was provided to the constructor.
+        /// Pops an item out of the pool for use.
         /// </summary>
         /// <returns>An item.</returns>
         public T Pop()
