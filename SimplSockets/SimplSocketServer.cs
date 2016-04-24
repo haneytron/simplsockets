@@ -48,9 +48,6 @@ namespace SimplSockets
         private readonly Pool<MessageReceivedArgs> _messageReceivedArgsPool = null;
         private readonly Pool<SocketErrorArgs> _socketErrorArgsPool = null;
 
-        // The control bytes placeholder - the first 4 bytes are little endian message length, the last 4 are thread id
-        private static readonly byte[] _controlBytesPlaceholder = new byte[] { 0, 0, 0, 0, 0, 0, 0, 0 };
-
         // A completely blind guess at the number of expected connections to this server. 100 sounds good, right? Right.
         private const int PREDICTED_CONNECTION_COUNT = 100;
 
@@ -108,7 +105,7 @@ namespace SimplSockets
             _socketAsyncEventArgsKeepAlivePool = new Pool<SocketAsyncEventArgs>(PREDICTED_CONNECTION_COUNT, () =>
             {
                 var poolItem = new SocketAsyncEventArgs();
-                poolItem.SetBuffer(_controlBytesPlaceholder, 0, _controlBytesPlaceholder.Length);
+                poolItem.SetBuffer(ProtocolHelper.ControlBytesPlaceholder, 0, ProtocolHelper.ControlBytesPlaceholder.Length);
                 poolItem.Completed += OperationCallback;
                 return poolItem;
             });
@@ -182,7 +179,7 @@ namespace SimplSockets
             // Get the current thread ID
             int threadId = Thread.CurrentThread.ManagedThreadId;
 
-            var messageWithControlBytes = AppendControlBytesToMessage(message, threadId);
+            var messageWithControlBytes = ProtocolHelper.AppendControlBytesToMessage(message, threadId);
 
             List<Socket> bustedClients = null;
 
@@ -239,7 +236,7 @@ namespace SimplSockets
                 throw new ArgumentException("contains corrupted data", "receivedMessageState");
             }
 
-            var messageWithControlBytes = AppendControlBytesToMessage(message, receivedMessage.ThreadId);
+            var messageWithControlBytes = ProtocolHelper.AppendControlBytesToMessage(message, receivedMessage.ThreadId);
 
             var socketAsyncEventArgs = _socketAsyncEventArgsSendPool.Pop();
             socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
@@ -322,16 +319,6 @@ namespace SimplSockets
         {
             // Close/dispose the socket
             _socket.Close();
-        }
-
-        private byte[] AppendControlBytesToMessage(byte[] message, int threadId)
-        {
-            // Create room for the control bytes
-            var messageWithControlBytes = new byte[_controlBytesPlaceholder.Length + message.Length];
-            Buffer.BlockCopy(message, 0, messageWithControlBytes, _controlBytesPlaceholder.Length, message.Length);
-            // Set the control bytes on the message
-            SetControlBytes(messageWithControlBytes, message.Length, threadId);
-            return messageWithControlBytes;
         }
 
         private void KeepAlive()
@@ -490,7 +477,7 @@ namespace SimplSockets
                 HandleCommunicationError(socket, new Exception("Send failed, error = " + socketAsyncEventArgs.SocketError));
             }
 
-            if (socketAsyncEventArgs.Buffer.Length == _controlBytesPlaceholder.Length)
+            if (socketAsyncEventArgs.Buffer.Length == ProtocolHelper.ControlBytesPlaceholder.Length)
             {
                 _socketAsyncEventArgsKeepAlivePool.Push(socketAsyncEventArgs);
                 return;
@@ -553,7 +540,7 @@ namespace SimplSockets
 
             int availableTest = 0;
             int controlBytesOffset = 0;
-            byte[] protocolBuffer = new byte[_controlBytesPlaceholder.Length];
+            byte[] protocolBuffer = new byte[ProtocolHelper.ControlBytesPlaceholder.Length];
             byte[] resultBuffer = null;
 
             var handler = connectedClient.Socket;
@@ -604,7 +591,7 @@ namespace SimplSockets
                     // Check if we need to get our control byte values
                     if (bytesToRead == -1)
                     {
-                        var controlBytesNeeded = _controlBytesPlaceholder.Length - controlBytesOffset;
+                        var controlBytesNeeded = ProtocolHelper.ControlBytesPlaceholder.Length - controlBytesOffset;
                         var controlBytesAvailable = bytesRead - currentOffset;
 
                         var controlBytesToCopy = Math.Min(controlBytesNeeded, controlBytesAvailable);
@@ -616,10 +603,10 @@ namespace SimplSockets
                         currentOffset += controlBytesToCopy;
 
                         // Check if done
-                        if (controlBytesOffset == _controlBytesPlaceholder.Length)
+                        if (controlBytesOffset == ProtocolHelper.ControlBytesPlaceholder.Length)
                         {
                             // Parse out control bytes
-                            ExtractControlBytes(protocolBuffer, out bytesToRead, out threadId);
+                            ProtocolHelper.ExtractControlBytes(protocolBuffer, out bytesToRead, out threadId);
 
                             // Reset control bytes offset
                             controlBytesOffset = 0;
@@ -774,26 +761,6 @@ namespace SimplSockets
                 error(this, socketErrorArgs);
                 _socketErrorArgsPool.Push(socketErrorArgs);
             }
-        }
-
-        private static void SetControlBytes(byte[] buffer, int length, int threadId)
-        {
-            // Set little endian message length
-            buffer[0] = (byte)length;
-            buffer[1] = (byte)((length >> 8) & 0xFF);
-            buffer[2] = (byte)((length >> 16) & 0xFF);
-            buffer[3] = (byte)((length >> 24) & 0xFF);
-            // Set little endian thread id
-            buffer[4] = (byte)threadId;
-            buffer[5] = (byte)((threadId >> 8) & 0xFF);
-            buffer[6] = (byte)((threadId >> 16) & 0xFF);
-            buffer[7] = (byte)((threadId >> 24) & 0xFF);
-        }
-
-        private static void ExtractControlBytes(byte[] buffer, out int messageLength, out int threadId)
-        {
-            messageLength = (buffer[3] << 24) | (buffer[2] << 16) | (buffer[1] << 8) | buffer[0];
-            threadId = (buffer[7] << 24) | (buffer[6] << 16) | (buffer[5] << 8) | buffer[4];
         }
 
         private bool TryUnsafeSocketOperation(Socket socket, SocketAsyncOperation operation, SocketAsyncEventArgs socketAsyncEventArgs)
