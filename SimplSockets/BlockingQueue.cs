@@ -12,17 +12,9 @@ namespace SimplSockets
     internal sealed class BlockingQueue<T>
     {
         // The underlying queue
-        LinkedList<T> _queue = null;
+        private readonly LinkedList<T> _queue = new LinkedList<T>();
         // The semaphore used for blocking
-        Semaphore _semaphore = new Semaphore(0, Int32.MaxValue);
-
-        /// <summary>
-        /// The constructor.
-        /// </summary>
-        public BlockingQueue()
-        {
-            _queue = new LinkedList<T>();
-        }
+        private readonly Semaphore _semaphore = new Semaphore(0, Int32.MaxValue);
 
         /// <summary>
         /// Enqueues an item.
