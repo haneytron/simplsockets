@@ -12,7 +12,7 @@ namespace SimplSockets
     internal sealed class BlockingQueue<T>
     {
         // The underlying queue
-        private readonly LinkedList<T> _queue = new LinkedList<T>();
+        private readonly List<T> _queue = new List<T>();
         // The semaphore used for blocking
         private readonly Semaphore _semaphore = new Semaphore(0, Int32.MaxValue);
 
@@ -24,7 +24,7 @@ namespace SimplSockets
         {
             lock (_queue)
             {
-                _queue.AddLast(item);
+                _queue.Add(item);
                 _semaphore.Release();
             }
         }
@@ -37,7 +37,7 @@ namespace SimplSockets
         {
             lock (_queue)
             {
-                _queue.AddFirst(item);
+                _queue.Insert(0, item);
                 _semaphore.Release();
             }
         }
@@ -56,9 +56,9 @@ namespace SimplSockets
             lock (_queue)
             {
                 if (_queue.Count == 0) return default(T);
-                var firstNode = _queue.First;
-                _queue.RemoveFirst();
-                return firstNode.Value;
+                var firstNode = _queue[0];
+                _queue.RemoveAt(0);
+                return firstNode;
             }
         }
 
