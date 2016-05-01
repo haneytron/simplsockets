@@ -7,7 +7,7 @@ available for review at <http://www.gnu.org/copyleft/gpl.html>
 and also included below.
 
 If you want to commercially distribute a version of SimplSockets and 
-can't use the GPL, contact us at <mailto:info@getdache.net> to 
+can't use the GPL, contact us at <mailto:info@dache.io> to 
 discuss a commercial license and assistance in commercial 
 integration.
 
