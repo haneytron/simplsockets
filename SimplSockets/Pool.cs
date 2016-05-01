@@ -60,6 +60,14 @@ namespace SimplSockets
 
             lock (_queue)
             {
+                if (_queueIndex == 0)
+                {
+                    // Dispose if applicable
+                    var disposable = item as IDisposable;
+                    if (disposable != null) disposable.Dispose();
+                    return;
+                }
+
                 _queueIndex--;
                 _queue[_queueIndex] = item;
             }
