@@ -53,13 +53,16 @@ namespace SimplSockets
                 return default(T);
             }
 
+            T firstNode;
+
             lock (_queue)
             {
                 if (_queue.Count == 0) return default(T);
-                var firstNode = _queue[0];
+                firstNode = _queue[0];
                 _queue.RemoveAt(0);
-                return firstNode;
             }
+
+            return firstNode;
         }
 
         /// <summary>
