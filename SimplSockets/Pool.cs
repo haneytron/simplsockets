@@ -10,9 +10,8 @@ namespace SimplSockets
     internal sealed class Pool<T> where T : class
     {
         // The queue that holds the items
-        private readonly Queue<T> _queue = null;
-        // The initial pool count
-        private readonly int _initialPoolCount = 0;
+        private readonly List<T> _queue = null;
+        private volatile int _queueIndex = 0;
         // The method that creates a new item
         private readonly Func<T> _newItemMethod = null;
         // The method that resets an item's state
@@ -26,15 +25,16 @@ namespace SimplSockets
         /// <param name="resetItemMethod">The method that resets an item's state. Optional.</param>
         public Pool(int poolCount, Func<T> newItemMethod, Action<T> resetItemMethod = null)
         {
-            _queue = new Queue<T>(poolCount);
-            _initialPoolCount = poolCount;
+            _queue = new List<T>(poolCount);
             _newItemMethod = newItemMethod;
             _resetItemMethod = resetItemMethod;
 
             // Create new items
             for (int i = 0; i < poolCount; i++)
             {
-                Push(newItemMethod());
+                var item = _newItemMethod();
+                if (_resetItemMethod != null) _resetItemMethod(item);
+                _queue.Add(item);
             }
         }
 
@@ -45,7 +45,7 @@ namespace SimplSockets
         public void Push(T item)
         {
             // Limit queue size
-            if (_queue.Count > _initialPoolCount)
+            if (_queueIndex == 0)
             {
                 // Dispose if applicable
                 var disposable = item as IDisposable;
@@ -60,7 +60,8 @@ namespace SimplSockets
 
             lock (_queue)
             {
-                _queue.Enqueue(item);
+                _queueIndex--;
+                _queue[_queueIndex] = item;
             }
         }
 
@@ -70,14 +71,17 @@ namespace SimplSockets
         /// <returns>An item.</returns>
         public T Pop()
         {
-            if (_queue.Count > 0)
+            if (_queueIndex != _queue.Count)
             {
                 lock (_queue)
                 {
                     // Double lock check
-                    if (_queue.Count > 0)
+                    if (_queueIndex != _queue.Count)
                     {
-                        return _queue.Dequeue();
+                        var item = _queue[_queueIndex];
+                        _queue[_queueIndex] = null;
+                        _queueIndex++;
+                        return item;
                     }
                 }
             }
