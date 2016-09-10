@@ -40,7 +40,7 @@ namespace SimplSockets
         /// <summary>
         /// An event that is fired when a client successfully connects to the server. Hook into this to do something when a connection succeeds.
         /// </summary>
-        event EventHandler ClientConnected;
+        event EventHandler<ClientConnectedArgs> ClientConnected;
 
         /// <summary>
         /// An event that is fired whenever a message is received. Hook into this to process messages and potentially call Reply to send a response.

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -85,8 +86,15 @@ namespace SimplSockets
             _maxMessageSize = maxMessageSize;
             _useNagleAlgorithm = useNagleAlgorithm;
 
+            _clientMultiplexer = new Dictionary<int, MultiplexerData>(PREDICTED_CONNECTION_COUNT);
             _currentlyConnectedClients = new List<ConnectedClient>(PREDICTED_CONNECTION_COUNT);
             _currentlyConnectedClientsReceiveQueues = new Dictionary<Socket, BlockingQueue<SocketAsyncEventArgs>>(PREDICTED_CONNECTION_COUNT);
+
+            _multiplexerDataPool = new Pool<MultiplexerData>(PREDICTED_CONNECTION_COUNT, () => new MultiplexerData { ManualResetEvent = new ManualResetEvent(false) }, multiplexerData =>
+            {
+                multiplexerData.Message = null;
+                multiplexerData.ManualResetEvent.Reset();
+            });
 
             // Create the pools
             _socketAsyncEventArgsSendPool = new Pool<SocketAsyncEventArgs>(PREDICTED_CONNECTION_COUNT, () =>
@@ -165,6 +173,121 @@ namespace SimplSockets
         }
 
         /// <summary>
+        /// Sends a message directly to a client
+        /// </summary>
+        /// <param name="guid">Connection GUID of client</param>
+        /// <param name="message">Payload to send</param>
+        /// <returns>The response message.</returns>
+        public byte[] Send(Guid guid, byte[] message)
+        {
+            if (message == null)
+            {
+                throw new ArgumentNullException(nameof(message));
+            }
+            if (message.Length == 0)
+            {
+                throw new ArgumentException("Argument is empty collection", nameof(message));
+            }
+            if (guid == Guid.Empty)
+            {
+                throw new ArgumentNullException(nameof(guid));
+            }
+
+            int threadId = Thread.CurrentThread.ManagedThreadId;
+
+            var multiplexerData = EnrollMultiplexer(threadId);
+
+            var messageWithControlBytes = ProtocolHelper.AppendControlBytesToMessage(message, threadId);
+
+            byte[] resp = new byte[0];
+
+            var client = _currentlyConnectedClients.FirstOrDefault(f => f.Guid == guid);
+    
+            var socketAsyncEventArgs = _socketAsyncEventArgsSendPool.Pop();
+            socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
+
+            if (!TryUnsafeSocketOperation(client.Socket, SocketAsyncOperation.Send, socketAsyncEventArgs))
+            {
+                throw new Exception("001");
+            }
+
+            if (!multiplexerData.ManualResetEvent.WaitOne(_communicationTimeout))
+            {
+                HandleCommunicationError(_socket, new TimeoutException("The connection timed out before the response message was received"), client.Guid);
+
+                // Unenroll from the multiplexer
+                UnenrollMultiplexer(threadId);
+
+                // No signal
+                return null;
+            }
+
+            resp = multiplexerData.Message;
+
+
+            UnenrollMultiplexer(threadId);
+
+            return resp;
+        }
+
+        private readonly Pool<MultiplexerData> _multiplexerDataPool = null;
+        private readonly Dictionary<int, MultiplexerData> _clientMultiplexer = null;
+        private readonly ReaderWriterLockSlim _clientMultiplexerLock = new ReaderWriterLockSlim();
+        private MultiplexerData EnrollMultiplexer(int threadId)
+        {
+            var multiplexerData = _multiplexerDataPool.Pop();
+
+            _clientMultiplexerLock.EnterWriteLock();
+            try
+            {
+                _clientMultiplexer.Add(threadId, multiplexerData);
+            }
+            finally
+            {
+                _clientMultiplexerLock.ExitWriteLock();
+            }
+
+            return multiplexerData;
+        }
+        private MultiplexerData GetMultiplexerData(int threadId)
+        {
+            MultiplexerData multiplexerData = null;
+
+            _clientMultiplexerLock.EnterReadLock();
+            try
+            {
+                _clientMultiplexer.TryGetValue(threadId, out multiplexerData);
+            }
+            finally
+            {
+                _clientMultiplexerLock.ExitReadLock();
+            }
+
+            return multiplexerData;
+        }
+        private void UnenrollMultiplexer(int threadId)
+        {
+            var multiplexerData = GetMultiplexerData(threadId);
+            if (multiplexerData == null)
+            {
+                return;
+            }
+
+            _clientMultiplexerLock.EnterWriteLock();
+            try
+            {
+                _clientMultiplexer.Remove(threadId);
+            }
+            finally
+            {
+                _clientMultiplexerLock.ExitWriteLock();
+            }
+
+            _multiplexerDataPool.Push(multiplexerData);
+        }
+
+
+        /// <summary>
         /// Broadcasts a message to all connected clients without waiting for a response (one-way communication).
         /// </summary>
         /// <param name="message">The message to send.</param>
@@ -181,7 +304,7 @@ namespace SimplSockets
 
             var messageWithControlBytes = ProtocolHelper.AppendControlBytesToMessage(message, threadId);
 
-            List<Socket> bustedClients = null;
+            List<ConnectedClient> bustedClients = null;
 
             // Do the send
             _currentlyConnectedClientsLock.EnterReadLock();
@@ -198,10 +321,10 @@ namespace SimplSockets
                         // Mark for disconnection
                         if (bustedClients == null)
                         {
-                            bustedClients = new List<Socket>();
+                            bustedClients = new List<ConnectedClient>();
                         }
 
-                        bustedClients.Add(client.Socket);
+                        bustedClients.Add(client);
                     }
                 }
             }
@@ -214,7 +337,7 @@ namespace SimplSockets
             {
                 foreach (var client in bustedClients)
                 {
-                    HandleCommunicationError(client, new Exception("Broadcast Send failed"));
+                    HandleCommunicationError(client.Socket, new Exception("Broadcast Send failed"), client.Guid );
                 }
             }
         }
@@ -276,7 +399,7 @@ namespace SimplSockets
 
             foreach (var client in clientList)
             {
-                HandleCommunicationError(client.Socket, new Exception("Host is shutting down"));
+                HandleCommunicationError(client.Socket, new Exception("Host is shutting down"), client.Guid);
             }
 
             // No longer connected
@@ -300,7 +423,7 @@ namespace SimplSockets
         /// <summary>
         /// An event that is fired when a client successfully connects to the server. Hook into this to do something when a connection succeeds.
         /// </summary>
-        public event EventHandler ClientConnected;
+        public event EventHandler<ClientConnectedArgs> ClientConnected;
 
         /// <summary>
         /// An event that is fired whenever a message is received. Hook into this to process messages and potentially call Reply to send a response.
@@ -323,7 +446,7 @@ namespace SimplSockets
 
         private void KeepAlive()
         {
-            List<Socket> bustedClients = null;
+            List<ConnectedClient> bustedClients = null;
 
             while (true)
             {
@@ -351,10 +474,10 @@ namespace SimplSockets
                             // Mark for disconnection
                             if (bustedClients == null)
                             {
-                                bustedClients = new List<Socket>();
+                                bustedClients = new List<ConnectedClient>();
                             }
-
-                            bustedClients.Add(client.Socket);
+                            
+                            bustedClients.Add(client);
                         }
                     }
                 }
@@ -367,7 +490,7 @@ namespace SimplSockets
                 {
                     foreach (var client in bustedClients)
                     {
-                        HandleCommunicationError(client, new Exception("Keep alive failed for a connected client"));
+                        HandleCommunicationError(client.Socket, new Exception("Keep alive failed for a connected client"), client.Guid);
                     }
                 }
             }
@@ -400,7 +523,7 @@ namespace SimplSockets
             }
             else if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                HandleCommunicationError(socket, new Exception("Accept failed, error = " + socketAsyncEventArgs.SocketError));
+                HandleCommunicationError(socket, new Exception("Accept failed, error = " + socketAsyncEventArgs.SocketError), Guid.Empty );
             }
 
             var handler = socketAsyncEventArgs.AcceptSocket;
@@ -421,7 +544,7 @@ namespace SimplSockets
             }
             catch (SocketException ex)
             {
-                HandleCommunicationError(handler, ex);
+                HandleCommunicationError(handler, ex, Guid.Empty);
                 return;
             }
             catch (ObjectDisposedException)
@@ -431,7 +554,7 @@ namespace SimplSockets
             }
 
             // Enroll in currently connected client sockets
-            var connectedClient = new ConnectedClient(handler);
+            var connectedClient = new ConnectedClient(handler, Guid.NewGuid());
             _currentlyConnectedClientsLock.EnterWriteLock();
             try
             {
@@ -447,7 +570,7 @@ namespace SimplSockets
             if (clientConnected != null)
             {
                 // Fire the event 
-                clientConnected(this, EventArgs.Empty);
+                clientConnected(this, new ClientConnectedArgs(connectedClient.Guid));
             }
 
             // Create receive buffer queue for this client
@@ -474,7 +597,7 @@ namespace SimplSockets
             // Check for error
             if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                HandleCommunicationError(socket, new Exception("Send failed, error = " + socketAsyncEventArgs.SocketError));
+                HandleCommunicationError(socket, new Exception("Send failed, error = " + socketAsyncEventArgs.SocketError), Guid.Empty);
             }
 
             if (socketAsyncEventArgs.Buffer.Length == ProtocolHelper.ControlBytesPlaceholder.Length)
@@ -491,7 +614,7 @@ namespace SimplSockets
             // Check for error
             if (socketAsyncEventArgs.SocketError != SocketError.Success)
             {
-                HandleCommunicationError(socket, new Exception("Receive failed, error = " + socketAsyncEventArgs.SocketError));
+                HandleCommunicationError(socket, new Exception("Receive failed, error = " + socketAsyncEventArgs.SocketError), _currentlyConnectedClients.FirstOrDefault(f=>f.Socket == socket)?.Guid  );
             }
 
             // Get the message state
@@ -521,7 +644,7 @@ namespace SimplSockets
             else
             {
                 // 0 bytes means disconnect
-                HandleCommunicationError(socket, new Exception("Received 0 bytes (graceful disconnect)"));
+                HandleCommunicationError(socket, new Exception("Received 0 bytes (graceful disconnect)"), _currentlyConnectedClients.FirstOrDefault(f => f.Socket == socket)?.Guid);
 
                 _socketAsyncEventArgsReceivePool.Push(socketAsyncEventArgs);
                 return;
@@ -614,7 +737,7 @@ namespace SimplSockets
                             // Ensure message is not larger than maximum message size
                             if (bytesToRead > _maxMessageSize)
                             {
-                                HandleCommunicationError(handler, new InvalidOperationException(string.Format("message of length {0} exceeds maximum message length of {1}", bytesToRead, _maxMessageSize)));
+                                HandleCommunicationError(handler, new InvalidOperationException(string.Format("message of length {0} exceeds maximum message length of {1}", bytesToRead, _maxMessageSize)), _currentlyConnectedClients.FirstOrDefault(f => f.Socket == _socket)?.Guid);
                                 return;
                             }
                         }
@@ -651,7 +774,7 @@ namespace SimplSockets
                         if (resultBuffer != null)
                         {
                             // Done, add to complete received messages
-                            CompleteMessage(handler, threadId, resultBuffer);
+                            CompleteMessage(handler, threadId, resultBuffer, connectedClient.Guid);
                             
                             // Reset message state
                             resultBuffer = null;
@@ -668,13 +791,42 @@ namespace SimplSockets
                 _socketAsyncEventArgsReceivePool.Push(socketAsyncEventArgs);
             }
         }
-
-        private void CompleteMessage(Socket handler, int threadId, byte[] message)
+        private void SignalMultiplexer(int threadId)
         {
+            MultiplexerData multiplexerData = null;
+
+            _clientMultiplexerLock.EnterReadLock();
+            try
+            {
+                if (!_clientMultiplexer.TryGetValue(threadId, out multiplexerData))
+                {
+                    // Nothing to do
+                    return;
+                }
+            }
+            finally
+            {
+                _clientMultiplexerLock.ExitReadLock();
+            }
+
+            multiplexerData.ManualResetEvent.Set();
+        }
+        private void CompleteMessage(Socket handler, int threadId, byte[] message, Guid guid)
+        {
+
+            var multiplexerData = GetMultiplexerData(threadId);
+            if (multiplexerData != null)
+            {
+                multiplexerData.Message = message;
+                SignalMultiplexer(threadId);
+                return;
+            }
+
             var receivedMessage = _receivedMessagePool.Pop();
             receivedMessage.Socket = handler;
             receivedMessage.ThreadId = threadId;
             receivedMessage.Message = message;
+            receivedMessage.Guid = guid;
 
             // Fire the event if needed 
             var messageReceived = MessageReceived;
@@ -698,7 +850,7 @@ namespace SimplSockets
         /// </summary>
         /// <param name="socket">The socket.</param>
         /// <param name="ex">The exception that the socket raised.</param>
-        private void HandleCommunicationError(Socket socket, Exception ex)
+        private void HandleCommunicationError(Socket socket, Exception ex, Guid? ConnectionGuid)
         {
             lock (socket)
             {
@@ -758,6 +910,7 @@ namespace SimplSockets
             {
                 var socketErrorArgs = _socketErrorArgsPool.Pop();
                 socketErrorArgs.Exception = ex;
+                socketErrorArgs.ConnectionGuid = ConnectionGuid;
                 error(this, socketErrorArgs);
                 _socketErrorArgsPool.Push(socketErrorArgs);
             }
@@ -792,7 +945,7 @@ namespace SimplSockets
             {
                 if (operation != SocketAsyncOperation.Accept)
                 {
-                    HandleCommunicationError(socket, ex);
+                    HandleCommunicationError(socket, ex, _currentlyConnectedClients.FirstOrDefault(f => f.Socket == socket)?.Guid);
                 }
                 return false;
             }
@@ -807,14 +960,15 @@ namespace SimplSockets
 
         private class ConnectedClient
         {
-            public ConnectedClient(Socket socket)
+            public ConnectedClient(Socket socket, Guid guid)
             {
                 if (socket == null) throw new ArgumentNullException("socket");
-
+                if (guid == Guid.Empty) throw new ArgumentNullException("guid");
                 Socket = socket;
+                Guid = guid;
                 LastResponse = DateTime.UtcNow;
             }
-
+            public Guid Guid { get; set; }
             public Socket Socket { get; private set; }
 
             public DateTime LastResponse { get; set; }

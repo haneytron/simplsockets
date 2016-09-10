@@ -43,6 +43,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="BlockingQueue.cs" />
+    <Compile Include="ClientConnectedArgs.cs" />
     <Compile Include="ProtocolHelper.cs" />
     <Compile Include="SocketErrorArgs.cs" />
     <Compile Include="ISimplSocketClient.cs" />

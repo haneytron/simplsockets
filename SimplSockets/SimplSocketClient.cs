@@ -4,6 +4,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Caching;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -160,7 +161,7 @@ namespace SimplSockets
                 _socket.NoDelay = !_useNagleAlgorithm;
                 // Set the linger state
                 _socket.LingerState = _lingerOption;
-
+                
                 // Post a connect to the socket synchronously
                 try
                 {
@@ -536,7 +537,7 @@ namespace SimplSockets
             var receivedMessage = _receivedMessagePool.Pop();
             receivedMessage.Socket = handler;
             receivedMessage.ThreadId = threadId;
-            receivedMessage.Message = message;
+            receivedMessage.Message = message; 
 
             // Fire the event if needed 
             var messageReceived = MessageReceived;
@@ -554,6 +555,33 @@ namespace SimplSockets
             // Place received message back in pool
             _receivedMessagePool.Push(receivedMessage);
         }
+
+        /// <summary>
+        /// Sends a message back to the server.
+        /// </summary>
+        /// <param name="message">The reply message to send.</param>
+        /// <param name="receivedMessage">The received message which is being replied to.</param>
+        public void Reply(byte[] message, ReceivedMessage receivedMessage)
+        {
+            // Sanitize
+            if (message == null)
+            {
+                throw new ArgumentNullException("message");
+            }
+            if (receivedMessage.Socket == null)
+            {
+                throw new ArgumentException("contains corrupted data", "receivedMessageState");
+            }
+
+            var messageWithControlBytes = ProtocolHelper.AppendControlBytesToMessage(message, receivedMessage.ThreadId);
+
+            var socketAsyncEventArgs = _socketAsyncEventArgsSendPool.Pop();
+            socketAsyncEventArgs.SetBuffer(messageWithControlBytes, 0, messageWithControlBytes.Length);
+
+            // Do the send to the appropriate client
+            TryUnsafeSocketOperation(receivedMessage.Socket, SocketAsyncOperation.Send, socketAsyncEventArgs);
+        }
+
 
         /// <summary>
         /// Handles an error in socket communication.

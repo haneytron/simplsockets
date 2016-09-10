@@ -13,7 +13,10 @@ namespace SimplSockets
     {
         internal Socket Socket;
         internal int ThreadId;
-
+        /// <summary>
+        /// The connection's GUID.
+        /// </summary>
+        public Guid Guid { get; set; }
         /// <summary>
         /// The message bytes.
         /// </summary>
