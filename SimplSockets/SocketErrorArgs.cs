@@ -16,6 +16,11 @@ namespace SimplSockets
         /// The exception.
         /// </summary>
         public Exception Exception { get; internal set; }
+
+        /// <summary>
+        /// The Connection's GUID
+        /// </summary>
+        public Guid? ConnectionGuid { get; set; }
     }
 }
 
