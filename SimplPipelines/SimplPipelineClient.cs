@@ -73,11 +73,20 @@ namespace SimplPipelines
                 }
                 if(tcs != null)
                 {
-                    var lease = payload.Lease();
-                    if (!tcs.TrySetResult(lease))
+                    IMemoryOwner<byte> lease = null;
+                    try
+                    {   // only if we successfully hand it over
+                        // to the TCS is it considered "not our
+                        // problem anymore" - otherwise: we need
+                        // to dispose
+                        lease = payload.Lease();
+                        if (tcs.TrySetResult(lease))
+                            lease = null;
+                    } finally
                     {
-                        try { lease.Dispose(); } catch { }
-                    }
+                        if(lease != null)
+                            try { lease.Dispose(); } catch { }
+                    }                    
                 }
                 
             }

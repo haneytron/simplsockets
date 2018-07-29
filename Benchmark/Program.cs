@@ -53,6 +53,16 @@ namespace Benchmark
         {
             Dispose(ref _socketServer);
             Dispose(ref _pipeServer);
+
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+            GC.WaitForPendingFinalizers();
+            CheckForLeaks();
+        }
+
+        static void CheckForLeaks()
+        {
+            int leaks = MemoryOwner.LeakCount<byte>();
+            if (leaks != 0) throw new InvalidOperationException($"Failed to dispose {leaks} byte-leases");
         }
         
         const int Ops = 1000;
@@ -61,10 +71,11 @@ namespace Benchmark
             int expected = _data.Length * Ops;
             if (result != expected) throw new InvalidOperationException(
                 $"Data error: expected {expected}, got {result}");
+            CheckForLeaks();
             return result;
         }
         
-        [Benchmark(OperationsPerInvoke = Ops)]
+        //[Benchmark(OperationsPerInvoke = Ops)]
         public long c1_s1()
         {
             long x = 0;
@@ -79,7 +90,7 @@ namespace Benchmark
             }
             return AssertResult(x);
         }
-        [Benchmark(OperationsPerInvoke = Ops)]
+        //[Benchmark(OperationsPerInvoke = Ops)]
         public long c1_s2()
         {
             long x = 0;
@@ -94,7 +105,7 @@ namespace Benchmark
             }
             return AssertResult(x);
         }
-        [Benchmark(OperationsPerInvoke = Ops)]
+        //[Benchmark(OperationsPerInvoke = Ops)]
         public async Task<long> c2_s1()
         {
             long x = 0;

@@ -8,6 +8,7 @@ namespace SimplPipelines
 {
     public static class MemoryOwner
     {
+        public static int LeakCount<T>() => ArrayPoolOwner<T>.LeakCount();
         public static IMemoryOwner<T> Empty<T>() => SimpleMemoryOwner<T>.Empty;
 
         public static IMemoryOwner<T> Owned<T>(this Memory<T> memory)
@@ -97,9 +98,14 @@ namespace SimplPipelines
 
             public void Dispose()
             {
+                GC.SuppressFinalize(this);
                 var arr = Interlocked.Exchange(ref _oversized, null);
                 if (arr != null) ArrayPool<T>.Shared.Return(arr);
             }
+
+            ~ArrayPoolOwner() { Interlocked.Increment(ref _leakCount); }
+            private static int _leakCount;
+            internal static int LeakCount() => Thread.VolatileRead(ref _leakCount);
         }
     }
     
