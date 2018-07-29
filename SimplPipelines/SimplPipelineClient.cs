@@ -43,8 +43,10 @@ namespace SimplPipelines
             int messageId;
             lock (_awaitingResponses)
             {
-                messageId = ++_nextMessageId;
-                if (messageId == 0) messageId = 1; // wrap around avoiding zero
+                do
+                {
+                    messageId = ++_nextMessageId;
+                } while (messageId == 0 || _awaitingResponses.ContainsKey(messageId));
                 _awaitingResponses.Add(messageId, tcs);
             }
             var write = WriteAsync(message, messageId);
@@ -69,7 +71,15 @@ namespace SimplPipelines
                         messageId = 0; // treat as MessageReceived
                     }
                 }
-                tcs?.TrySetResult(payload.Lease());
+                if(tcs != null)
+                {
+                    var lease = payload.Lease();
+                    if (!tcs.TrySetResult(lease))
+                    {
+                        try { lease.Dispose(); } catch { }
+                    }
+                }
+                
             }
             if (messageId == 0)
             {
