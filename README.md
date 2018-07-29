@@ -22,3 +22,8 @@ To create a client or server:
 `var client = new SimplSocketClient(...)`
 
 `var server = new SimplSocketServer(...)`
+
+---
+
+`SimplPipelines` is a re-imagining of `SimplSockets` that takes the same protocol and applies "piplines" and "async" concepts
+throughout; an example client and server is provided, including a "Kestrel" host.
