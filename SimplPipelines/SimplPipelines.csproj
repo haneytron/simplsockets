@@ -23,14 +23,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- project dependencies -->
     <PackageReference Include="Pipelines.Sockets.Unofficial" Version="0.2.1-alpha.72" />
     <PackageReference Include="System.Buffers" Version="4.5.0" />
     <PackageReference Include="System.IO.Pipelines" Version="4.5.0" />
-    <PackageReference Include="SourceLink.Create.GitHub" Version="2.8.3" PrivateAssets="All" /> 
-    <DotNetCliToolReference Include="dotnet-sourcelink" Version="2.8.3" />
-    <DotNetCliToolReference Include="dotnet-sourcelink-git" Version="2.8.3" />
   </ItemGroup>
   <ItemGroup>
+    <!-- build/packaging tools -->
+    <PackageReference Include="SourceLink.Create.GitHub" Version="2.8.3" PrivateAssets="All" />
+    <DotNetCliToolReference Include="dotnet-sourcelink" Version="2.8.3" />
+    <DotNetCliToolReference Include="dotnet-sourcelink-git" Version="2.8.3" />
     <PackageReference Include="Nerdbank.GitVersioning" Version="2.1.65">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
