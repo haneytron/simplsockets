@@ -1,6 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 2012
+# Visual Studio 15
+VisualStudioVersion = 15.0.27906.1
+MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SimplSockets", "SimplSockets\SimplSockets.csproj", "{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{FA9E9333-3010-4D4D-918A-D881895115B4}"
@@ -8,6 +10,16 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 		LICENSE.txt = LICENSE.txt
 		README.md = README.md
 	EndProjectSection
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SimplPipelines", "SimplPipelines\SimplPipelines.csproj", "{3805425D-126C-48DC-BE4D-6014D6C714B4}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "DemoClient", "DemoClient\DemoClient.csproj", "{480EC9D6-A876-4F12-8588-5E37F1550AD0}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "DemoServer", "DemoServer\DemoServer.csproj", "{E33CADAC-C174-4EA6-A6B5-D350CB34D999}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "KestrelServer", "KestrelServer\KestrelServer.csproj", "{AEE35403-82DD-4F37-A4C1-119A01BEB078}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Benchmark", "Benchmark\Benchmark.csproj", "{AA5BC121-ACF3-4D77-97B2-165B8374EFC4}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -19,8 +31,31 @@ Global
 		{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{CBAEB3E0-AF0D-4E30-BE69-7ED63F58EDEF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3805425D-126C-48DC-BE4D-6014D6C714B4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3805425D-126C-48DC-BE4D-6014D6C714B4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3805425D-126C-48DC-BE4D-6014D6C714B4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3805425D-126C-48DC-BE4D-6014D6C714B4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{480EC9D6-A876-4F12-8588-5E37F1550AD0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{480EC9D6-A876-4F12-8588-5E37F1550AD0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{480EC9D6-A876-4F12-8588-5E37F1550AD0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{480EC9D6-A876-4F12-8588-5E37F1550AD0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E33CADAC-C174-4EA6-A6B5-D350CB34D999}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E33CADAC-C174-4EA6-A6B5-D350CB34D999}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E33CADAC-C174-4EA6-A6B5-D350CB34D999}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E33CADAC-C174-4EA6-A6B5-D350CB34D999}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AEE35403-82DD-4F37-A4C1-119A01BEB078}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AEE35403-82DD-4F37-A4C1-119A01BEB078}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AEE35403-82DD-4F37-A4C1-119A01BEB078}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AEE35403-82DD-4F37-A4C1-119A01BEB078}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AA5BC121-ACF3-4D77-97B2-165B8374EFC4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AA5BC121-ACF3-4D77-97B2-165B8374EFC4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AA5BC121-ACF3-4D77-97B2-165B8374EFC4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AA5BC121-ACF3-4D77-97B2-165B8374EFC4}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0B116E4D-EDFB-4B43-9E7F-1012F0A6813D}
 	EndGlobalSection
 EndGlobal

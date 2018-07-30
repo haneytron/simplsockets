@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>netcoreapp2.1;net47</TargetFrameworks>
+    <LangVersion>7.2</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SimplPipelines\SimplPipelines.csproj" />
+    <ProjectReference Include="..\SimplSockets\SimplSockets.csproj" />
+    <PackageReference Include="Pipelines.Sockets.Unofficial" Version="0.2.1-alpha.72" />
+  </ItemGroup>
+
+</Project>

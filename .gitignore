@@ -2,6 +2,9 @@
 [Bb]in/
 [Oo]bj/
 
+# IDE files
+.vs/
+
 # mstest test results
 TestResults
 
